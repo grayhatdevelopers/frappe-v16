@@ -1,0 +1,482 @@
+x-app-image: &app-image
+  image: '${APP_IMAGE:?APP_IMAGE must be an immutable v15 or v16 image reference}'
+  pull_policy: always
+  restart: unless-stopped
+  deploy:
+    mode: replicated
+    replicas: '${RUNTIME_REPLICAS:?RUNTIME_REPLICAS must be 0 for the backup cutover and 1 for normal runtime}'
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+    - logs:/home/frappe/frappe-bench/logs
+
+x-lifecycle-environment: &lifecycle-environment
+  DEPLOYMENT_MODE: '${DEPLOYMENT_MODE:-runtime}'
+  OPERATION_ID: '${OPERATION_ID:-}'
+  MIGRATION_CONFIRMATION: '${MIGRATION_CONFIRMATION:-}'
+  BACKUP_COPY_CONFIRMATION: '${BACKUP_COPY_CONFIRMATION:-}'
+  SITE_NAME: '${SITE_NAME:?SITE_NAME is required}'
+  BACKUP_SITE_NAME: '${BACKUP_SITE_NAME:-}'
+  ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
+  DB_HOST: '${DB_HOST:-db}'
+  DB_PORT: '${DB_PORT:-3306}'
+  DB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}'
+
+x-lifecycle-service: &lifecycle-service
+  image: '${APP_IMAGE:?APP_IMAGE must be an immutable v15 or v16 image reference}'
+  pull_policy: always
+  restart: 'no'
+  exclude_from_hc: true
+  entrypoint:
+    - bash
+    - -lc
+  environment: *lifecycle-environment
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+    - logs:/home/frappe/frappe-bench/logs
+    - backups:/backups
+
+services:
+  db:
+    image: '${DB_IMAGE:?DB_IMAGE must be the exact current database image for backup/rollback or MariaDB 11.8 for v16}'
+    pull_policy: always
+    restart: unless-stopped
+    deploy:
+      mode: replicated
+      replicas: '${ENABLE_DB:?ENABLE_DB must be explicitly set to 0 or 1 after checking the live Coolify environment}'
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+    environment:
+      MYSQL_ROOT_PASSWORD: '${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}'
+      MARIADB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}'
+      MARIADB_AUTO_UPGRADE: '${MARIADB_AUTO_UPGRADE:-}'
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'healthcheck.sh --connect --innodb_initialized'
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  redis-cache:
+    image: redis:6.2-alpine
+    pull_policy: always
+    restart: unless-stopped
+    volumes:
+      - redis-cache-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis-queue:
+    image: redis:6.2-alpine
+    pull_policy: always
+    restart: unless-stopped
+    volumes:
+      - redis-queue-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  storage-init:
+    image: '${APP_IMAGE:?APP_IMAGE must be an immutable v15 or v16 image reference}'
+    pull_policy: always
+    restart: 'no'
+    exclude_from_hc: true
+    user: '0:0'
+    entrypoint:
+      - bash
+      - -lc
+    command:
+      - |
+        set -Eeuo pipefail
+        frappe_uid="$$(id -u frappe)"
+        frappe_gid="$$(id -g frappe)"
+        chown "$${frappe_uid}:$${frappe_gid}" \
+          /home/frappe/frappe-bench/sites \
+          /home/frappe/frappe-bench/logs \
+          /backups
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+      - backups:/backups
+
+  configurator:
+    <<: *lifecycle-service
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    command:
+      - |
+        set -Eeuo pipefail
+        case "$${DEPLOYMENT_MODE}" in
+          runtime|backup|upgrade|restore|rollback|fresh) ;;
+          *) echo "Unsupported DEPLOYMENT_MODE=$${DEPLOYMENT_MODE}" >&2; exit 64 ;;
+        esac
+        wait-for-it -t 180 "$${DB_HOST}:$${DB_PORT}"
+        wait-for-it -t 120 redis-cache:6379
+        wait-for-it -t 120 redis-queue:6379
+        ls -1 apps > sites/apps.txt
+        bench set-config -g db_host "$${DB_HOST}"
+        bench set-config -gp db_port "$${DB_PORT}"
+        bench set-config -g redis_cache redis://redis-cache:6379
+        bench set-config -g redis_queue redis://redis-queue:6379
+        bench set-config -g redis_socketio redis://redis-queue:6379
+        bench set-config -gp socketio_port 9000
+
+  backup:
+    <<: *lifecycle-service
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    command:
+      - |
+        set -Eeuo pipefail
+        [[ "$${DEPLOYMENT_MODE}" == backup ]] || { echo "Backup skipped in $${DEPLOYMENT_MODE} mode"; exit 0; }
+        [[ "$${MIGRATION_CONFIRMATION}" == BACKUP_V15_TO_V16 ]] || { echo "Set MIGRATION_CONFIRMATION=BACKUP_V15_TO_V16" >&2; exit 64; }
+        [[ "$${OPERATION_ID}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "OPERATION_ID must contain only letters, numbers, dot, underscore, or dash" >&2; exit 64; }
+        [[ -d "sites/$${SITE_NAME}" ]] || { echo "Site $${SITE_NAME} does not exist" >&2; exit 66; }
+
+        source_site="$${BACKUP_SITE_NAME:-$${SITE_NAME}}"
+        [[ "$${source_site}" == "$${SITE_NAME}" ]] || { echo "BACKUP_SITE_NAME must be empty or match SITE_NAME in backup mode" >&2; exit 64; }
+        backup_dir="/backups/$${source_site}/$${OPERATION_ID}"
+        mkdir -p "$${backup_dir}"
+        if [[ -f "$${backup_dir}/backup.complete" ]]; then
+          echo "Verified backup set already exists at $${backup_dir}"
+          exit 0
+        fi
+        if find "$${backup_dir}" -mindepth 1 -print -quit | grep -q .; then
+          echo "Refusing to overwrite incomplete backup directory $${backup_dir}" >&2
+          exit 73
+        fi
+
+        bench --site "$${SITE_NAME}" set-config -p maintenance_mode 1
+        bench --site "$${SITE_NAME}" set-config -p pause_scheduler 1
+        bench --site "$${SITE_NAME}" ready-for-migration
+
+        if bench version --format plain > "$${backup_dir}/bench-versions.txt" 2>&1; then
+          cat "$${backup_dir}/bench-versions.txt"
+        else
+          bench version | tee "$${backup_dir}/bench-versions.txt"
+        fi
+        bench --site "$${SITE_NAME}" list-apps | tee "$${backup_dir}/installed-apps.txt"
+        for app in frappe erpnext hrms payments; do
+          grep -Eq "^$${app}([[:space:]]|$)" "$${backup_dir}/installed-apps.txt" || { echo "Required app $${app} is not installed" >&2; exit 65; }
+        done
+
+        bench --site "$${SITE_NAME}" backup \
+          --with-files \
+          --compress \
+          --backup-path-db "$${backup_dir}/database.sql.gz" \
+          --backup-path-conf "$${backup_dir}/site-config.json" \
+          --backup-path-files "$${backup_dir}/public-files.tgz" \
+          --backup-path-private-files "$${backup_dir}/private-files.tgz"
+
+        gzip -t "$${backup_dir}/database.sql.gz"
+        tar -tzf "$${backup_dir}/public-files.tgz" >/dev/null
+        tar -tzf "$${backup_dir}/private-files.tgz" >/dev/null
+        (
+          cd "$${backup_dir}"
+          sha256sum database.sql.gz site-config.json public-files.tgz private-files.tgz > SHA256SUMS
+          sha256sum -c SHA256SUMS
+        )
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$${backup_dir}/created-at.txt"
+        printf '%s\n' "$${SITE_NAME}" > "$${backup_dir}/source-site.txt"
+        touch "$${backup_dir}/backup.complete"
+        echo "Backup complete. The site remains in maintenance mode for cutover."
+
+  restore:
+    <<: *lifecycle-service
+    depends_on:
+      backup:
+        condition: service_completed_successfully
+    command:
+      - |
+        set -Eeuo pipefail
+        case "$${DEPLOYMENT_MODE}" in
+          restore) expected_confirmation=RESTORE_V15_TO_V16 ;;
+          rollback) expected_confirmation=RESTORE_V15_ROLLBACK ;;
+          *) echo "Restore skipped in $${DEPLOYMENT_MODE} mode"; exit 0 ;;
+        esac
+        [[ "$${MIGRATION_CONFIRMATION}" == "$${expected_confirmation}" ]] || { echo "Incorrect MIGRATION_CONFIRMATION for $${DEPLOYMENT_MODE}" >&2; exit 64; }
+        [[ "$${OPERATION_ID}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid OPERATION_ID" >&2; exit 64; }
+        [[ -n "$${ADMIN_PASSWORD}" ]] || { echo "ADMIN_PASSWORD is required for restore" >&2; exit 64; }
+        [[ ! -d "sites/$${SITE_NAME}" ]] || { echo "Restore requires fresh target sites and database volumes" >&2; exit 73; }
+
+        source_site="$${BACKUP_SITE_NAME:-$${SITE_NAME}}"
+        backup_dir="/backups/$${source_site}/$${OPERATION_ID}"
+        state_dir="sites/.deployment-state/$${OPERATION_ID}"
+        mkdir -p "$${state_dir}"
+        [[ -f "$${backup_dir}/backup.complete" ]] || { echo "Backup set is incomplete: $${backup_dir}" >&2; exit 66; }
+        (
+          cd "$${backup_dir}"
+          sha256sum -c SHA256SUMS
+        )
+
+        bench new-site \
+          --mariadb-user-host-login-scope='%' \
+          --admin-password="$${ADMIN_PASSWORD}" \
+          --db-root-username=root \
+          --db-root-password="$${DB_ROOT_PASSWORD}" \
+          "$${SITE_NAME}"
+        bench --site "$${SITE_NAME}" restore \
+          "$${backup_dir}/database.sql.gz" \
+          --with-public-files "$${backup_dir}/public-files.tgz" \
+          --with-private-files "$${backup_dir}/private-files.tgz" \
+          --db-root-username root \
+          --db-root-password "$${DB_ROOT_PASSWORD}" \
+          --force
+        jq -s '
+          .[0] as $$source
+          | .[1] as $$target
+          | $$source * {
+              "db_name": $$target.db_name,
+              "db_password": $$target.db_password,
+              "db_type": ($$target.db_type // $$source.db_type)
+            }
+        ' \
+          "$${backup_dir}/site-config.json" \
+          "sites/$${SITE_NAME}/site_config.json" \
+          > "sites/$${SITE_NAME}/site_config.json.merged"
+        mv \
+          "sites/$${SITE_NAME}/site_config.json.merged" \
+          "sites/$${SITE_NAME}/site_config.json"
+        bench --site "$${SITE_NAME}" set-config -p maintenance_mode 1
+        bench --site "$${SITE_NAME}" set-config -p pause_scheduler 1
+        touch "$${state_dir}/restore.complete"
+
+  bootstrap:
+    <<: *lifecycle-service
+    depends_on:
+      restore:
+        condition: service_completed_successfully
+    command:
+      - |
+        set -Eeuo pipefail
+        if [[ "$${DEPLOYMENT_MODE}" == fresh ]]; then
+          [[ "$${MIGRATION_CONFIRMATION}" == CREATE_NEW_V16_SITE ]] || { echo "Set MIGRATION_CONFIRMATION=CREATE_NEW_V16_SITE" >&2; exit 64; }
+          [[ "$${OPERATION_ID}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid OPERATION_ID" >&2; exit 64; }
+          [[ -n "$${ADMIN_PASSWORD}" ]] || { echo "ADMIN_PASSWORD is required for a fresh site" >&2; exit 64; }
+          [[ ! -d "sites/$${SITE_NAME}" ]] || { echo "Refusing to replace existing site $${SITE_NAME}" >&2; exit 73; }
+          bench new-site \
+            --mariadb-user-host-login-scope='%' \
+            --admin-password="$${ADMIN_PASSWORD}" \
+            --db-root-username=root \
+            --db-root-password="$${DB_ROOT_PASSWORD}" \
+            --install-app payments \
+            --install-app erpnext \
+            --install-app hrms \
+            "$${SITE_NAME}"
+        else
+          [[ -d "sites/$${SITE_NAME}" ]] || { echo "Site $${SITE_NAME} is missing; choose fresh or restore mode" >&2; exit 66; }
+        fi
+
+  rollback:
+    <<: *lifecycle-service
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    command:
+      - |
+        set -Eeuo pipefail
+        [[ "$${DEPLOYMENT_MODE}" == rollback ]] || { echo "Rollback finalization skipped in $${DEPLOYMENT_MODE} mode"; exit 0; }
+        [[ "$${MIGRATION_CONFIRMATION}" == RESTORE_V15_ROLLBACK ]] || { echo "Set MIGRATION_CONFIRMATION=RESTORE_V15_ROLLBACK" >&2; exit 64; }
+        state_dir="sites/.deployment-state/$${OPERATION_ID}"
+        [[ -f "$${state_dir}/restore.complete" ]] || { echo "Rollback restore did not complete" >&2; exit 66; }
+        bench version | tee "$${state_dir}/rollback-bench-versions.txt"
+        bench --site "$${SITE_NAME}" list-apps | tee "$${state_dir}/rollback-installed-apps.txt"
+        for app in frappe erpnext hrms payments; do
+          grep -Eq "^$${app}([[:space:]]|$)" "$${state_dir}/rollback-installed-apps.txt" || { echo "Required app $${app} is missing after rollback restore" >&2; exit 65; }
+        done
+        bench --site "$${SITE_NAME}" set-config -p pause_scheduler 0
+        bench --site "$${SITE_NAME}" set-config -p maintenance_mode 0
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$${state_dir}/rollback-completed-at.txt"
+        touch "$${state_dir}/rollback.complete"
+
+  migrate:
+    <<: *lifecycle-service
+    depends_on:
+      rollback:
+        condition: service_completed_successfully
+    command:
+      - |
+        set -Eeuo pipefail
+        case "$${DEPLOYMENT_MODE}" in
+          runtime|backup|rollback)
+            echo "Migration skipped in $${DEPLOYMENT_MODE} mode"
+            exit 0
+            ;;
+          fresh)
+            expected_confirmation=CREATE_NEW_V16_SITE
+            ;;
+          upgrade)
+            expected_confirmation=UPGRADE_V15_TO_V16
+            ;;
+          restore)
+            expected_confirmation=RESTORE_V15_TO_V16
+            ;;
+        esac
+        [[ "$${MIGRATION_CONFIRMATION}" == "$${expected_confirmation}" ]] || { echo "Incorrect MIGRATION_CONFIRMATION" >&2; exit 64; }
+        [[ "$${OPERATION_ID}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid OPERATION_ID" >&2; exit 64; }
+
+        state_dir="sites/.deployment-state/$${OPERATION_ID}"
+        mkdir -p "$${state_dir}"
+        if [[ -f "$${state_dir}/migration.complete" ]]; then
+          echo "Migration $${OPERATION_ID} already completed for this sites volume"
+          exit 0
+        fi
+
+        manifest=/opt/frappe/image-manifest.json
+        [[ -f "$${manifest}" ]] || { echo "APP_IMAGE is not a verified Grayhat v16 image" >&2; exit 65; }
+        jq -e '
+          . as $$manifest
+          | $$manifest.major_version == 16
+            and (["frappe", "erpnext", "hrms", "payments"]
+              | all(. as $$app | ($$manifest.apps[$$app].commit | length) == 40))
+        ' "$${manifest}" >/dev/null
+        cat "$${manifest}"
+        bench version --format plain
+
+        source_site="$${BACKUP_SITE_NAME:-$${SITE_NAME}}"
+        backup_dir="/backups/$${source_site}/$${OPERATION_ID}"
+        if [[ "$${DEPLOYMENT_MODE}" == upgrade ]]; then
+          [[ -f "$${backup_dir}/backup.complete" ]] || { echo "A verified v15 backup with this OPERATION_ID is required" >&2; exit 66; }
+          [[ "$${BACKUP_COPY_CONFIRMATION}" == OFF_HOST_COPY_VERIFIED ]] || { echo "Set BACKUP_COPY_CONFIRMATION=OFF_HOST_COPY_VERIFIED only after copying the backup set off this Docker host" >&2; exit 64; }
+          (
+            cd "$${backup_dir}"
+            sha256sum -c SHA256SUMS
+          )
+        fi
+        if [[ "$${DEPLOYMENT_MODE}" == restore ]]; then
+          [[ -f "$${state_dir}/restore.complete" ]] || { echo "Restore did not complete" >&2; exit 66; }
+        fi
+
+        migration_succeeded=0
+        cleanup() {
+          if [[ "$${migration_succeeded}" == 1 ]]; then
+            bench --site "$${SITE_NAME}" set-config -p pause_scheduler 0
+            bench --site "$${SITE_NAME}" set-config -p maintenance_mode 0
+          else
+            echo "Migration failed; maintenance mode and scheduler pause remain enabled" >&2
+          fi
+        }
+        trap cleanup EXIT
+        bench --site "$${SITE_NAME}" set-config -p maintenance_mode 1
+        bench --site "$${SITE_NAME}" set-config -p pause_scheduler 1
+        bench --site "$${SITE_NAME}" migrate
+        bench --site "$${SITE_NAME}" clear-cache
+        bench --site "$${SITE_NAME}" list-apps | tee "$${state_dir}/installed-apps-after-migration.txt"
+        for app in frappe erpnext hrms payments; do
+          grep -Eq "^$${app}([[:space:]]|$)" "$${state_dir}/installed-apps-after-migration.txt" || { echo "Required app $${app} is missing after migration" >&2; exit 65; }
+        done
+        cp "$${manifest}" "$${state_dir}/image-manifest.json"
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$${state_dir}/completed-at.txt"
+        touch "$${state_dir}/migration.complete"
+        migration_succeeded=1
+
+  backend:
+    <<: *app-image
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, wait-for-it, '0.0.0.0:8000']
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  websocket:
+    <<: *app-image
+    command: [node, /home/frappe/frappe-bench/apps/frappe/socketio.js]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, wait-for-it, '0.0.0.0:9000']
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  frontend:
+    <<: *app-image
+    command: [nginx-entrypoint.sh]
+    expose:
+      - '8080'
+    depends_on:
+      backend:
+        condition: service_healthy
+      websocket:
+        condition: service_healthy
+    environment:
+      BACKEND: backend:8000
+      FRAPPE_SITE_NAME_HEADER: '${FRAPPE_SITE_NAME_HEADER:-$$host}'
+      SOCKETIO: websocket:9000
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: 'off'
+      PROXY_READ_TIMEOUT: '${PROXY_READ_TIMEOUT:-120}'
+      CLIENT_MAX_BODY_SIZE: '${CLIENT_MAX_BODY_SIZE:-50m}'
+      HTTPS: '${HTTPS:-on}'
+      HTTP_X_FORWARDED_PROTO: '${HTTP_X_FORWARDED_PROTO:-https}'
+      HTTP_X_FORWARDED_SSL: '${HTTP_X_FORWARDED_SSL:-on}'
+      HTTP_X_FORWARDED_PORT: '${HTTP_X_FORWARDED_PORT:-443}'
+      FORCE_SSL: '${FORCE_SSL:-1}'
+    healthcheck:
+      test: [CMD, wait-for-it, '0.0.0.0:8080']
+      interval: 5s
+      timeout: 30s
+      retries: 30
+
+  queue-default:
+    <<: *app-image
+    command: [bench, worker, --queue, default]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  queue-short:
+    <<: *app-image
+    command: [bench, worker, --queue, short]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  queue-long:
+    <<: *app-image
+    command: [bench, worker, --queue, long]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  scheduler:
+    <<: *app-image
+    command: [bench, schedule]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  db-data:
+    name: '${DB_VOLUME_NAME:?DB_VOLUME_NAME must be the existing production volume or a deliberate fresh recovery volume}'
+  redis-cache-data:
+    name: '${REDIS_CACHE_VOLUME_NAME:?REDIS_CACHE_VOLUME_NAME is required}'
+  redis-queue-data:
+    name: '${REDIS_QUEUE_VOLUME_NAME:?REDIS_QUEUE_VOLUME_NAME is required}'
+  sites:
+    name: '${SITES_VOLUME_NAME:?SITES_VOLUME_NAME must be the existing production volume or a deliberate fresh recovery volume}'
+  logs:
+    name: '${LOGS_VOLUME_NAME:?LOGS_VOLUME_NAME is required}'
+  backups:
+    name: '${BACKUP_VOLUME_NAME:?BACKUP_VOLUME_NAME is required and must remain stable across backup and restore stacks}'
