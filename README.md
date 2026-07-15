@@ -12,16 +12,11 @@ This repository builds and operates a combined Frappe v16 image containing ERPNe
 
 The image workflow publishes an immutable release tag and a `sha-<repository commit>` tag. Do not deploy `latest` or a mutable branch tag.
 
-## Operating modes
+## Deployment sequence
 
-| Mode | Image/database | Purpose |
-| --- | --- | --- |
-| `runtime` | Current production versions | Idempotent configuration and normal service startup; never backs up, restores, creates, or migrates a site. |
-| `backup` | Existing v15 image + exact current database image | Pauses the site, checks pending jobs and installed apps, then creates and verifies a deterministic database/files/config backup set. |
-| `upgrade` | Verified v16 image + MariaDB 11.8 | Requires the matching v15 backup and off-host-copy confirmation, then runs the v16 migration. |
-| `restore` | Verified v16 image + MariaDB 11.8 on fresh volumes | Restores a v15 backup set into a new site and immediately migrates it to v16. |
-| `rollback` | Exact v15 image + exact pre-upgrade database image on fresh volumes | Restores the v15 backup without applying v16 migrations. |
-| `fresh` | Verified v16 image + MariaDB 11.8 on fresh volumes | Creates a new site with ERPNext, HRMS, and Payments. |
+Each deployment runs the official-style one-shot configurator, creates a site only when the sites volume is genuinely empty, ensures Payments, ERPNext, and HRMS are installed, and runs Frappe migration before starting the runtime services. Existing cloned and production sites skip creation automatically.
+
+The v15-to-v16 rehearsal uses a complete isolated copy of the production database and sites data. After the clone passes with the v16 application image and MariaDB 11.8, production receives the same image and Compose changes. There are no deployment modes or restore flags.
 
 See [the Coolify migration runbook](docs/coolify-v15-to-v16.md) before changing the live Service.
 
