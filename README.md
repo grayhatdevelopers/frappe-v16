@@ -4,10 +4,8 @@ This repository builds and operates a combined Frappe v16 image containing ERPNe
 
 ## Repository contract
 
-- [`build/versions.env`](build/versions.env) is the human-readable version lock.
-- [`build/image-manifest.json`](build/image-manifest.json) is embedded in every image and checked before migration.
-- [`build/apps.json`](build/apps.json) selects the released ERPNext and HRMS tags. Payments is checked out to the exact commit in the version lock because it currently has no v16 release tag.
-- [`.github/workflows/build-image.yml`](.github/workflows/build-image.yml) is manual-only. It checks out the official `frappe_docker` builder at a pinned commit, builds, verifies all four apps, and only publishes when `publish=true` is explicitly selected.
+- [`build/apps.json`](build/apps.json) is the only source of ERPNext, HRMS, and Payments refs used by the image build.
+- [`.github/workflows/build-image.yml`](.github/workflows/build-image.yml) is manual-only. It pins Frappe and the official `frappe_docker` builder once, uses the upstream layered Containerfile without modification, verifies all four apps, and only publishes when `publish=true` is explicitly selected.
 - [`compose.yaml`](compose.yaml) is pull-only and designed to be pasted into a Coolify user-defined Service. Coolify is not connected to this Git repository.
 
 The image workflow publishes an immutable release tag and a `sha-<repository commit>` tag. Do not deploy `latest` or a mutable branch tag.

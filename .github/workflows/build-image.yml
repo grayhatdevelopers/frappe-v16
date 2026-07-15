@@ -1,14 +1,14 @@
-name: Build verified Frappe v16 image
+name: Build Frappe v16 image
 
 on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: Immutable release tag, for example v16-2026-07-15.1
+        description: Immutable release tag, for example v16-2026-07-16.1
         required: true
         type: string
       publish:
-        description: Push the verified image to GHCR
+        description: Push the image to GHCR after the smoke test
         required: true
         default: false
         type: boolean
@@ -22,115 +22,100 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-verify-publish:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BUILDER_DIR: builder
+      FRAPPE_DOCKER_REF: c004361e790125ed13aaa933d11f7838711a8960
+      FRAPPE_REF: v16.27.0
+      CACHE_SCOPE: frappe-v16
+      TEST_IMAGE: local/frappe-v16:${{ github.run_id }}-${{ github.run_attempt }}
+
     steps:
-      - name: Check out deployment repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Checkout deployment repository
+        uses: actions/checkout@v7
 
-      - name: Load pinned versions
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          python3 scripts/validate_build_lock.py
-          while IFS='=' read -r key value; do
-            [[ -z "${key}" ]] && continue
-            printf '%s=%s\n' "${key}" "${value}" >> "${GITHUB_ENV}"
-          done < build/versions.env
+      - name: Checkout official Frappe Docker builder
+        uses: actions/checkout@v7
+        with:
+          repository: frappe/frappe_docker
+          ref: ${{ env.FRAPPE_DOCKER_REF }}
+          path: ${{ env.BUILDER_DIR }}
 
-      - name: Prepare pinned builder context
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          git clone --filter=blob:none --no-checkout https://github.com/frappe/frappe_docker.git .builder
-          git -C .builder fetch --depth 1 origin "${FRAPPE_DOCKER_COMMIT}"
-          git -C .builder checkout --detach FETCH_HEAD
-          [[ "$(git -C .builder rev-parse HEAD)" == "${FRAPPE_DOCKER_COMMIT}" ]]
-          cp build/image-manifest.json .builder/image-manifest.json
-          python3 scripts/patch_frappe_docker.py .builder/images/custom/Containerfile
-          git -C .builder diff --check
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          image: tonistiigi/binfmt:latest
+          platforms: all
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Set image names
-        shell: bash
+      - name: Set image name
         env:
           REQUESTED_TAG: ${{ inputs.image_tag }}
         run: |
           set -Eeuo pipefail
           [[ "${REQUESTED_TAG}" =~ ^v16-[0-9]{4}-[0-9]{2}-[0-9]{2}\.[0-9]+$ ]]
           owner="${GITHUB_REPOSITORY_OWNER,,}"
-          printf 'IMAGE_NAME=ghcr.io/%s/frappe-v16\n' "${owner}" >> "${GITHUB_ENV}"
-          printf 'LOCAL_IMAGE=local/frappe-v16:%s\n' "${GITHUB_SHA}" >> "${GITHUB_ENV}"
+          echo "IMAGE_NAME=ghcr.io/${owner}/frappe-v16" >> "${GITHUB_ENV}"
 
-      - name: Build amd64 verification image
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          docker buildx build .builder \
-            --file .builder/images/custom/Containerfile \
-            --platform linux/amd64 \
-            --load \
-            --tag "${LOCAL_IMAGE}" \
-            --build-arg FRAPPE_PATH=https://github.com/frappe/frappe \
-            --build-arg "FRAPPE_BRANCH=${FRAPPE_REF}" \
-            --build-arg "FRAPPE_COMMIT=${FRAPPE_COMMIT}" \
-            --build-arg "ERPNEXT_COMMIT=${ERPNEXT_COMMIT}" \
-            --build-arg "HRMS_COMMIT=${HRMS_COMMIT}" \
-            --build-arg "PAYMENTS_COMMIT=${PAYMENTS_COMMIT}" \
-            --build-arg "PYTHON_VERSION=${PYTHON_VERSION}" \
-            --build-arg "NODE_VERSION=${NODE_VERSION}" \
-            --secret "id=apps_json,src=${GITHUB_WORKSPACE}/build/apps.json" \
-            --cache-from type=gha,scope=frappe-v16 \
-            --cache-to type=gha,mode=max,scope=frappe-v16
+      - name: Build smoke-test image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ env.BUILDER_DIR }}
+          file: ${{ env.BUILDER_DIR }}/images/layered/Containerfile
+          build-args: |
+            FRAPPE_PATH=https://github.com/frappe/frappe
+            FRAPPE_BRANCH=${{ env.FRAPPE_REF }}
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+          cache-to: type=gha,mode=max,scope=${{ env.CACHE_SCOPE }}
+          load: true
+          platforms: linux/amd64
+          secrets: |
+            id=apps_json,src=${{ github.workspace }}/build/apps.json
+          tags: ${{ env.TEST_IMAGE }}
 
       - name: Verify image contents
-        shell: bash
         run: |
           set -Eeuo pipefail
-          docker run --rm --entrypoint cat "${LOCAL_IMAGE}" /opt/frappe/image-manifest.json > /tmp/image-manifest.json
-          diff -u build/image-manifest.json /tmp/image-manifest.json
-          docker run --rm --entrypoint bench "${LOCAL_IMAGE}" version --format json > /tmp/bench-versions.json
+          docker run --rm --entrypoint bench "${TEST_IMAGE}" version --format json | tee /tmp/bench-versions.json
           jq -e '
             (map(.app) | sort) as $apps
             | ["erpnext", "frappe", "hrms", "payments"]
               | all(. as $app | $apps | index($app))
           ' /tmp/bench-versions.json
-          jq -e '.major_version == 16' /tmp/image-manifest.json
+          jq -e '
+            ["frappe", "erpnext", "hrms"] as $v16_apps
+            | all(.[]; . as $app
+                | $v16_apps
+                | index($app.app) == null or ($app.version | startswith("16.")))
+          ' /tmp/bench-versions.json
 
-      - name: Log in to GHCR
+      - name: Login to GHCR
         if: ${{ inputs.publish }}
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
 
-      - name: Publish verified multi-architecture image
+      - name: Publish multi-architecture image
         if: ${{ inputs.publish }}
-        shell: bash
-        env:
-          REQUESTED_TAG: ${{ inputs.image_tag }}
-        run: |
-          set -Eeuo pipefail
-          docker buildx build .builder \
-            --file .builder/images/custom/Containerfile \
-            --platform linux/amd64,linux/arm64 \
-            --push \
-            --tag "${IMAGE_NAME}:${REQUESTED_TAG}" \
-            --tag "${IMAGE_NAME}:sha-${GITHUB_SHA}" \
-            --build-arg FRAPPE_PATH=https://github.com/frappe/frappe \
-            --build-arg "FRAPPE_BRANCH=${FRAPPE_REF}" \
-            --build-arg "FRAPPE_COMMIT=${FRAPPE_COMMIT}" \
-            --build-arg "ERPNEXT_COMMIT=${ERPNEXT_COMMIT}" \
-            --build-arg "HRMS_COMMIT=${HRMS_COMMIT}" \
-            --build-arg "PAYMENTS_COMMIT=${PAYMENTS_COMMIT}" \
-            --build-arg "PYTHON_VERSION=${PYTHON_VERSION}" \
-            --build-arg "NODE_VERSION=${NODE_VERSION}" \
-            --secret "id=apps_json,src=${GITHUB_WORKSPACE}/build/apps.json" \
-            --cache-from type=gha,scope=frappe-v16 \
-            --cache-to type=gha,mode=max,scope=frappe-v16
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ env.BUILDER_DIR }}
+          file: ${{ env.BUILDER_DIR }}/images/layered/Containerfile
+          build-args: |
+            FRAPPE_PATH=https://github.com/frappe/frappe
+            FRAPPE_BRANCH=${{ env.FRAPPE_REF }}
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+          cache-to: type=gha,mode=max,scope=${{ env.CACHE_SCOPE }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          secrets: |
+            id=apps_json,src=${{ github.workspace }}/build/apps.json
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}
+            ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
