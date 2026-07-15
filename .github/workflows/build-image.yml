@@ -34,6 +34,16 @@ jobs:
       TEST_IMAGE: local/frappe-v16:${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/share/dotnet
+          df -h /
+
       - name: Checkout deployment repository
         uses: actions/checkout@v7
 
@@ -96,6 +106,9 @@ jobs:
                 | $v16_apps
                 | index($app.app) == null or ($app.version | startswith("16.")))
           ' /tmp/bench-versions.json
+
+      - name: Remove smoke-test image
+        run: docker image rm "${TEST_IMAGE}"
 
       - name: Login to GHCR
         if: ${{ inputs.publish }}
