@@ -118,7 +118,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Publish multi-architecture image
+      - name: Publish image
         if: ${{ inputs.publish }}
         uses: docker/build-push-action@v7
         with:
@@ -130,7 +130,7 @@ jobs:
             CACHE_BUST=${{ env.APPS_CACHE_KEY }}
           cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
           cache-to: type=gha,mode=max,scope=${{ env.CACHE_SCOPE }}
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           secret-files: |
             apps_json=${{ env.APPS_JSON_PATH }}
