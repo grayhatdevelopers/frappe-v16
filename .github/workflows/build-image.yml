@@ -134,6 +134,4 @@ jobs:
           push: true
           secret-files: |
             apps_json=${{ env.APPS_JSON_PATH }}
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}
-            ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          tags: ${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}

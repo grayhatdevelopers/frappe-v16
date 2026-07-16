@@ -8,7 +8,7 @@ This repository builds and operates a combined Frappe v16 image containing ERPNe
 - [`.github/workflows/build-image.yml`](.github/workflows/build-image.yml) is manual-only. It pins Frappe and the official `frappe_docker` builder once, uses the upstream layered Containerfile without modification, verifies all four apps, and only publishes when `publish=true` is explicitly selected.
 - [`compose.yaml`](compose.yaml) is pull-only and designed to be pasted into a Coolify user-defined Service. Coolify is not connected to this Git repository.
 
-The image workflow publishes an immutable release tag and a `sha-<repository commit>` tag. Do not deploy `latest` or a mutable branch tag.
+The image workflow publishes the requested immutable release tag. Do not deploy `latest` or a mutable branch tag.
 
 ## Deployment sequence
 
