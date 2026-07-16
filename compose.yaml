@@ -11,7 +11,7 @@ x-job: &job
   pull_policy: always
   restart: 'no'
   exclude_from_hc: true
-  entrypoint: [bash, -lc]
+  entrypoint: [bash, -c]
   volumes:
     - sites:/home/frappe/frappe-bench/sites
     - logs:/home/frappe/frappe-bench/logs
@@ -105,15 +105,15 @@ services:
         set -Eeuo pipefail
         if [[ -d "sites/$${SITE_NAME}" ]]; then
           echo "Site $${SITE_NAME} already exists"
-          exit 0
+        else
+          [[ -n "$${ADMIN_PASSWORD}" ]] || { echo 'ADMIN_PASSWORD is required when creating a new site' >&2; exit 64; }
+          bench new-site \
+            --mariadb-user-host-login-scope='%' \
+            --admin-password="$${ADMIN_PASSWORD}" \
+            --db-root-username=root \
+            --db-root-password="$${DB_ROOT_PASSWORD}" \
+            "$${SITE_NAME}"
         fi
-        [[ -n "$${ADMIN_PASSWORD}" ]] || { echo 'ADMIN_PASSWORD is required when creating a new site' >&2; exit 64; }
-        bench new-site \
-          --mariadb-user-host-login-scope='%' \
-          --admin-password="$${ADMIN_PASSWORD}" \
-          --db-root-username=root \
-          --db-root-password="$${DB_ROOT_PASSWORD}" \
-          "$${SITE_NAME}"
 
   install-apps:
     <<: *job
@@ -189,7 +189,12 @@ services:
 
   frontend:
     <<: *app
-    command: [nginx-entrypoint.sh]
+    command:
+      - bash
+      - -c
+      - |
+        export FRAPPE_SITE_NAME_HEADER="$${SITE_NAME}"
+        exec nginx-entrypoint.sh
     expose:
       - '8080'
     depends_on:
@@ -199,7 +204,7 @@ services:
         condition: service_healthy
     environment:
       BACKEND: backend:8000
-      FRAPPE_SITE_NAME_HEADER: '${FRAPPE_SITE_NAME_HEADER:-$$host}'
+      SITE_NAME: '${SITE_NAME:?SITE_NAME is required}'
       SOCKETIO: websocket:9000
       UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
       UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
