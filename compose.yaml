@@ -157,10 +157,20 @@ services:
         }
         trap finish EXIT
 
+        echo 'Enabling maintenance mode and pausing the scheduler'
         bench --site "$${SITE_NAME}" set-config -p maintenance_mode 1
         bench --site "$${SITE_NAME}" set-config -p pause_scheduler 1
-        bench --site "$${SITE_NAME}" migrate
+
+        echo 'Clearing caches from the previously deployed image'
         bench --site "$${SITE_NAME}" clear-cache
+
+        echo 'Running site migration'
+        bench --site "$${SITE_NAME}" migrate
+
+        echo 'Clearing post-migration caches'
+        bench --site "$${SITE_NAME}" clear-cache
+
+        echo 'Installed applications after migration'
         bench --site "$${SITE_NAME}" list-apps
         migration_succeeded=1
 
