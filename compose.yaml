@@ -2,8 +2,6 @@ x-app: &app
   image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
   pull_policy: always
   restart: unless-stopped
-  networks:
-    - bench-network
   volumes:
     - sites:/home/frappe/frappe-bench/sites
     - logs:/home/frappe/frappe-bench/logs
@@ -12,9 +10,7 @@ x-job: &job
   image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
   pull_policy: always
   restart: 'no'
-  exclude_from_hc: true
-  networks:
-    - bench-network
+  # exclude_from_hc: true
   entrypoint: [bash, -c]
   volumes:
     - sites:/home/frappe/frappe-bench/sites
@@ -26,8 +22,6 @@ services:
     pull_policy: always
     restart: unless-stopped
     stop_grace_period: 2m
-    networks:
-      - bench-network
     deploy:
       mode: replicated
       replicas: '${ENABLE_DB:?Set ENABLE_DB to 0 for an external database or 1 for the Compose database}'
@@ -52,8 +46,6 @@ services:
     image: redis:6.2-alpine
     pull_policy: always
     restart: unless-stopped
-    networks:
-      - bench-network
     volumes:
       - redis-cache-data:/data
     healthcheck:
@@ -66,8 +58,6 @@ services:
     image: redis:6.2-alpine
     pull_policy: always
     restart: unless-stopped
-    networks:
-      - bench-network
     volumes:
       - redis-queue-data:/data
     healthcheck:
@@ -276,7 +266,6 @@ services:
     image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
     entrypoint: ["bash", "-c"]
     restart: 'no'
-    # profiles: ["backup"]
     depends_on:
       db:
         condition: service_healthy
@@ -336,14 +325,9 @@ services:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
  
-    networks:
-      - bench-network
- 
   restore:
     image: "${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}"
-    user: root
-    # profiles: ["restore"]
- 
+    user: root 
     entrypoint: ["bash", "-c"]
     restart: 'no'
  
@@ -477,9 +461,6 @@ services:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
  
-    networks:
-      - bench-network
- 
   restore-db:
     image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
     user: frappe
@@ -552,15 +533,6 @@ services:
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
- 
-    networks:
-      - bench-network
- 
- 
-networks:
-  bench-network:
-    name: frappe_docker_bench-network
- 
  
 volumes:
   db-data:
