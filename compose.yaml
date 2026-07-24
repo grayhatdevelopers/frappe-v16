@@ -102,8 +102,6 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
-      restore-db:
-        condition: service_completed_successfully
       ensure-db:
         condition: service_completed_successfully
       verify-db-root:
@@ -135,6 +133,8 @@ services:
     <<: *job
     depends_on:
       create-site:
+        condition: service_completed_successfully
+      restore-db: 
         condition: service_completed_successfully
     environment:
       SITE_NAME: '${SITE_NAME:?SITE_NAME is required}'
@@ -283,8 +283,8 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
-      restore-db:
-        condition: service_completed_successfully
+      db:
+        condition: service_healthy
     environment:
       DB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}'
       DB_HOST: '${DB_HOST:-db}'
@@ -373,171 +373,117 @@ services:
         echo "Waiting for database..."
         wait-for-it -t 180 "$${DB_HOST:-db}:$${DB_PORT:-3306}"
  
-        echo "Running Frappe backup..."
         SITE_NAME="$${SITE_NAME:?SITE_NAME is required}"
+        BACKUP_DIR="/home/frappe/frappe-bench/sites/$${SITE_NAME}/private/backups"
+        KEEP_LOCAL_DUMPS="$${KEEP_LOCAL_DUMPS:-3}"
 
- 
+        echo "Running Frappe backup..."
         bench --site "$${SITE_NAME}" backup --with-files
+
+        echo "Cleaning up old local backup dumps (keeping last $${KEEP_LOCAL_DUMPS})..."
+        ls -1t "$${BACKUP_DIR}"/*-database.sql.gz 2>/dev/null \
+          | tail -n +"$((KEEP_LOCAL_DUMPS + 1))" \
+          | sed -E 's/-database\.sql\.gz$//' \
+          | while read -r prefix; do
+              rm -fv "$${prefix}"-database.sql.gz \
+                     "$${prefix}"-files.tar \
+                     "$${prefix}"-private-files.tar \
+                     "$${prefix}"-site_config_backup.json
+            done
+
         if ! restic snapshots >/dev/null 2>&1; then
             echo "No Restic repository detected. Creating one..."
             restic init
         else
             echo "Restic repository found."
         fi
- 
-        restic backup /home/frappe/frappe-bench/sites
- 
+
+        echo "Backing up dump files to Restic..."
+        restic backup "$${BACKUP_DIR}" --tag "site:$${SITE_NAME}"
+
         restic forget \
           --group-by=paths \
           --keep-last=3 \
           --prune
- 
         restic check
- 
         echo "Backup completed successfully"
- 
     environment:
+      ENABLE_BACKUP: ${ENABLE_BACKUP:-false}
       RESTIC_REPOSITORY: ${RESTIC_REPOSITORY}
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD}
       AWS_ACCESS_KEY_ID: ${B2_ACCOUNT_ID}
       AWS_SECRET_ACCESS_KEY: ${B2_ACCOUNT_KEY}
-      RESTIC_PASSWORD: ${RESTIC_PASSWORD}
-      ENABLE_BACKUP: ${ENABLE_BACKUP:-false}
-      DB_HOST: '${DB_HOST:-db}'
-      DB_PORT: '${DB_PORT:-3306}'
-      SITE_NAME: ${SITE_NAME:?SITE_NAME is required}
- 
+      SITE_NAME: ${SITE_NAME}
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-3306}
+      KEEP_LOCAL_DUMPS: ${KEEP_LOCAL_DUMPS:-3}
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
- 
   restore:
     image: "${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}"
-    user: root 
+    user: root
     entrypoint: ["bash", "-c"]
     restart: 'no'
     depends_on:
       configurator:
         condition: service_completed_successfully
- 
     command:
       - |
         set -Eeuo pipefail
- 
         ENABLE_RESTORE="$${ENABLE_RESTORE:-false}"
- 
         case "$${ENABLE_RESTORE}" in
-          true|1|yes|on)
-            ;;
+          true|1|yes|on) ;;
           *)
-            echo "========================================="
-            echo "Restore is disabled."
-            echo "Set ENABLE_RESTORE=true to enable."
-            echo "========================================="
+            echo "Restore is disabled. Set ENABLE_RESTORE=true to enable."
             exit 0
             ;;
         esac
- 
         SITE_NAME="$${SITE_NAME:-frontend}"
         SNAPSHOT="$${SNAPSHOT:-latest}"
- 
         RESTORE_ROOT="/restore"
-        SRC="$${RESTORE_ROOT}/home/frappe/frappe-bench/sites/$${SITE_NAME}"
- 
+        SRC="$${RESTORE_ROOT}/home/frappe/frappe-bench/sites/$${SITE_NAME}/private/backups"
         SITES_ROOT="/home/frappe/frappe-bench/sites"
-        DST="$${SITES_ROOT}/$${SITE_NAME}"
-        TMP="$${SITES_ROOT}/$${SITE_NAME}.tmp"
-        BACKUP="$${SITES_ROOT}/$${SITE_NAME}.bak"
- 
+        DST="$${SITES_ROOT}/$${SITE_NAME}/private/backups"
+        STAGE_TMP="$${DST}.staging-tmp"
+
         rollback() {
           echo
-          echo "Restore failed."
- 
-          rm -rf "$${TMP}" || true
- 
-          if [ -d "$${BACKUP}" ] && [ ! -d "$${DST}" ]; then
-            echo "Rolling back previous site..."
-            mv "$${BACKUP}" "$${DST}"
-          fi
+          echo "Staging failed — cleaning up partial files."
+          rm -rf "$${STAGE_TMP}" "$${RESTORE_ROOT}"
         }
- 
         trap rollback ERR
- 
-        echo "========================================="
-        echo "Restic Restore"
-        echo "Site      : $${SITE_NAME}"
-        echo "Snapshot  : $${SNAPSHOT}"
-        echo "========================================="
- 
-        echo
+
         echo "Checking repository..."
         restic cat config >/dev/null
- 
         echo "Checking snapshot..."
-        restic ls "$${SNAPSHOT}" >/dev/null
- 
-        echo "Preparing restore directory..."
+        restic snapshots --tag "site:$${SITE_NAME}" >/dev/null
+
         rm -rf "$${RESTORE_ROOT}"
         mkdir -p "$${RESTORE_ROOT}"
- 
+
         echo "Downloading snapshot..."
         restic restore "$${SNAPSHOT}" \
+          --tag "site:$${SITE_NAME}" \
           --target "$${RESTORE_ROOT}"
- 
+
         if [ ! -d "$${SRC}" ]; then
-          echo "ERROR: Site '$${SITE_NAME}' not found in snapshot."
+          echo "ERROR: No backups found for site '$${SITE_NAME}' in snapshot."
           exit 1
         fi
- 
-        if [ ! -f "$${SRC}/site_config.json" ]; then
-          echo "ERROR: site_config.json missing."
-          exit 1
-        fi
- 
-        mkdir -p "$${SITES_ROOT}"
- 
-        rm -rf "$${TMP}"
-        rm -rf "$${BACKUP}"
- 
-        echo
-        echo "Copying restored site..."
-        cp -a "$${SRC}" "$${TMP}"
- 
-        if [ ! -f "$${TMP}/site_config.json" ]; then
-          echo "ERROR: Temporary copy validation failed."
-          exit 1
-        fi
- 
-        chown -R frappe:frappe "$${TMP}"
- 
-        if [ -d "$${DST}" ]; then
-          echo
-          echo "Backing up existing site..."
-          mv "$${DST}" "$${BACKUP}"
-        fi
- 
-        echo "Activating restored site..."
-        mv "$${TMP}" "$${DST}"
- 
-        if [ ! -f "$${DST}/site_config.json" ]; then
-          echo "ERROR: Final validation failed."
-          exit 1
-        fi
- 
-        echo "$(date -Iseconds) Snapshot=$${SNAPSHOT}" \
-          > "$${DST}/.restore-info"
- 
-        rm -rf "$${BACKUP}"
-        rm -rf "$${RESTORE_ROOT}"
- 
+
+        # Stage into a temp dir first, then atomically move into place
+        rm -rf "$${STAGE_TMP}"
+        mkdir -p "$${STAGE_TMP}"
+        cp -a "$${SRC}"/. "$${STAGE_TMP}"/
+        chown -R frappe:frappe "$${STAGE_TMP}"
+
+        mkdir -p "$${DST}"
+        cp -a "$${STAGE_TMP}"/. "$${DST}"/
+        rm -rf "$${STAGE_TMP}" "$${RESTORE_ROOT}"
+
         trap - ERR
- 
-        echo
-        echo "========================================="
-        echo "Restore completed successfully."
-        echo "Site      : $${SITE_NAME}"
-        echo "Snapshot  : $${SNAPSHOT}"
-        echo "========================================="
- 
+        echo "Backup files staged for $${SITE_NAME}"
     environment:
       ENABLE_RESTORE: ${ENABLE_RESTORE:-false}
       RESTIC_REPOSITORY: ${RESTIC_REPOSITORY}
@@ -545,75 +491,83 @@ services:
       AWS_ACCESS_KEY_ID: ${B2_ACCOUNT_ID}
       AWS_SECRET_ACCESS_KEY: ${B2_ACCOUNT_KEY}
       SITE_NAME: ${SITE_NAME}
- 
+      SNAPSHOT: ${SNAPSHOT:-latest}
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
- 
+
   restore-db:
     image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
     user: frappe
     entrypoint: ["bash", "-c"]
     restart: 'no'
     depends_on:
+      create-site:
+        condition: service_completed_successfully
       restore:
         condition: service_completed_successfully
       db:
         condition: service_healthy
     environment:
-      SITE_NAME: '${SITE_NAME:-frontend}'
-      ENABLE_DB_RESTORE: ${ENABLE_DB_RESTORE:-false}
+      ENABLE_RESTORE: ${ENABLE_RESTORE:-false}
+      SITE_NAME: '${SITE_NAME:?SITE_NAME is required}'
       DB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}'
       DB_HOST: '${DB_HOST:-db}'
       DB_PORT: '${DB_PORT:-3306}'
     command:
       - |
         set -Eeuo pipefail
- 
-        ENABLE_DB_RESTORE="$${ENABLE_DB_RESTORE:-false}"
- 
-        case "$${ENABLE_DB_RESTORE}" in
-          true|1|yes|on)
-            ;;
+
+        ENABLE_RESTORE="$${ENABLE_RESTORE:-false}"
+        case "$${ENABLE_RESTORE}" in
+          true|1|yes|on) ;;
           *)
-            echo "========================================="
-            echo "DB Restore is disabled."
-            echo "Set ENABLE_DB_RESTORE=true to enable."
-            echo "========================================="
+            echo "Restore is disabled. Nothing to restore into DB."
             exit 0
             ;;
         esac
- 
-        echo "Waiting for database..."
-        wait-for-it -t 180 "$${DB_HOST}:$${DB_PORT}"
- 
-        BACKUP_DIR="sites/$${SITE_NAME}/private/backups"
-        echo "========================================="
-        echo "Database Restore"
-        echo "Site : $${SITE_NAME}"
-        echo "========================================="
 
-        # Frappe replaces '.' with '_' in backup filenames
-        SITE_FILE_PREFIX="$${SITE_NAME//./_}"
+        BACKUP_DIR="sites/$${SITE_NAME}/private/backups"
 
         shopt -s nullglob
-        DB_FILES=("$${BACKUP_DIR}"/*-"$${SITE_FILE_PREFIX}"-database.sql.gz)
-        PUBLIC_FILES=("$${BACKUP_DIR}"/*-"$${SITE_FILE_PREFIX}"-files.tar)
-        PRIVATE_FILES=("$${BACKUP_DIR}"/*-"$${SITE_FILE_PREFIX}"-private-files.tar)
+        DB_FILES=("$${BACKUP_DIR}"/*-database.sql.gz)
+        PUBLIC_FILES=("$${BACKUP_DIR}"/*-files.tar)
+        PRIVATE_FILES=("$${BACKUP_DIR}"/*-private-files.tar)
 
         if [[ $${#DB_FILES[@]} -eq 0 ]]; then
-          echo "ERROR: No database backup found in $${BACKUP_DIR} matching prefix '$${SITE_FILE_PREFIX}'" >&2
-          ls -la "$${BACKUP_DIR}" >&2 || true
-          exit 1
+          echo "No database backup found; skipping DB restore (fresh site)."
+          exit 0
         fi
 
         DB_FILE=$(printf '%s\n' "$${DB_FILES[@]}" | sort | tail -n1)
         PUBLIC_FILE=$( [[ $${#PUBLIC_FILES[@]} -gt 0 ]] && printf '%s\n' "$${PUBLIC_FILES[@]}" | sort | tail -n1 || true )
         PRIVATE_FILE=$( [[ $${#PRIVATE_FILES[@]} -gt 0 ]] && printf '%s\n' "$${PRIVATE_FILES[@]}" | sort | tail -n1 || true )
 
-        echo "Using database backup : $${DB_FILE}"
-        echo "Using public files    : $${PUBLIC_FILE:-none}"
-        echo "Using private files   : $${PRIVATE_FILE:-none}"
+        # --- Rollback safety net: snapshot current DB before touching it ---
+        CONFIG="sites/$${SITE_NAME}/site_config.json"
+        DB_NAME=$(python3 -c "import json;print(json.load(open('$${CONFIG}'))['db_name'])")
+        PRE_RESTORE_DUMP="sites/$${SITE_NAME}/private/backups/pre-restore-safety.sql.gz"
+
+        rollback_triggered=0
+        rollback() {
+          if [[ "$${rollback_triggered}" == 1 ]]; then
+            return
+          fi
+          rollback_triggered=1
+          echo
+          echo "bench restore failed — rolling back database to pre-restore state..."
+          if [[ -f "$${PRE_RESTORE_DUMP}" ]]; then
+            gunzip -c "$${PRE_RESTORE_DUMP}" | mariadb -h "$${DB_HOST}" -P "$${DB_PORT}" -uroot -p"$${DB_ROOT_PASSWORD}" "$${DB_NAME}"
+            echo "Rollback complete — DB restored to pre-restore state."
+          else
+            echo "WARNING: no pre-restore snapshot found; cannot auto-rollback." >&2
+          fi
+        }
+        trap rollback ERR
+
+        echo "Taking safety snapshot of current DB before restore..."
+        mariadb-dump -h "$${DB_HOST}" -P "$${DB_PORT}" -uroot -p"$${DB_ROOT_PASSWORD}" "$${DB_NAME}" \
+          | gzip > "$${PRE_RESTORE_DUMP}"
 
         RESTORE_ARGS=("$${DB_FILE}" --db-root-username root --db-root-password "$${DB_ROOT_PASSWORD}")
         [[ -n "$${PUBLIC_FILE}" ]] && RESTORE_ARGS+=(--with-public-files "$${PUBLIC_FILE}")
@@ -623,14 +577,13 @@ services:
         bench --site "$${SITE_NAME}" enable-scheduler
         bench --site "$${SITE_NAME}" migrate
         bench --site "$${SITE_NAME}" clear-cache
- 
-        echo
-        echo "Database restore + migrate completed successfully."
- 
+        trap - ERR
+        rm -f "$${PRE_RESTORE_DUMP}"
+        echo "Database restore completed."
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
- 
+
 volumes:
   db-data:
     name: '${DB_VOLUME_NAME:?DB_VOLUME_NAME is required}'
