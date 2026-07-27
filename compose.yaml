@@ -377,6 +377,9 @@ services:
         BACKUP_DIR="/home/frappe/frappe-bench/sites/$${SITE_NAME}/private/backups"
         KEEP_LOCAL_DUMPS="$${KEEP_LOCAL_DUMPS:-3}"
 
+        echo "Removing stale Restic locks..."
+        restic unlock || true
+
         echo "Running Frappe backup..."
         bench --site "$${SITE_NAME}" backup --with-files
 
