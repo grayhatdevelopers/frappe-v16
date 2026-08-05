@@ -102,9 +102,9 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
-      ensure-db:
+      ensure-site-db:
         condition: service_completed_successfully
-      verify-db-root:
+      verify-db-root-credentials:
         condition: service_completed_successfully
     environment:
       ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
@@ -278,7 +278,7 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  ensure-db:
+  ensure-site-db:
     <<: *job
     depends_on:
       configurator:
@@ -317,7 +317,7 @@ services:
 
         echo "Database ensured for $${SITE_NAME}"
     
-  verify-db-root:
+  verify-db-root-credentials:
     <<: *job
     depends_on:
       db:
