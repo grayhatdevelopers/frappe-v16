@@ -10,5 +10,9 @@
   {
     "url": "https://github.com/frappe/payments",
     "branch": "version-16"
+  },
+  {
+    "url": "https://github.com/buildswithpaul/Frappe_Assistant_Core",
+    "branch": "v2.5.0"
   }
 ]

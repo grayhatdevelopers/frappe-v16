@@ -82,6 +82,12 @@ services:
         wait-for-it -t 180 "$${DB_HOST}:$${DB_PORT}"
         wait-for-it -t 120 redis-cache:6379
         wait-for-it -t 120 redis-queue:6379
+
+        echo "Cleaning up stale orphaned/temp site folders..."
+        find sites -maxdepth 1 -name "*.orphaned-*" -exec rm -rf {} \;
+        find sites -maxdepth 1 -name "*.tmp" -exec rm -rf {} \;
+        find sites -maxdepth 1 -name "*.bak" -mmin +60 -exec rm -rf {} \;
+
         ls -1 apps > sites/apps.txt
         bench set-config -g db_host "$${DB_HOST}"
         bench set-config -gp db_port "$${DB_PORT}"
@@ -96,6 +102,10 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
+      ensure-site-db:
+        condition: service_completed_successfully
+      verify-db-root-credentials:
+        condition: service_completed_successfully
     environment:
       ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
       DB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}'
@@ -103,22 +113,28 @@ services:
     command:
       - |
         set -Eeuo pipefail
-        if [[ -d "sites/$${SITE_NAME}" ]]; then
-          echo "Site $${SITE_NAME} already exists"
+        if [[ -f "sites/$${SITE_NAME}/site_config.json" ]]; then
+            echo "Site files exist"
+
+            if ! bench --site "$${SITE_NAME}" list-apps >/dev/null 2>&1; then
+                echo "Site exists but database is not initialized"
+                exit 1
+            fi
         else
-          [[ -n "$${ADMIN_PASSWORD}" ]] || { echo 'ADMIN_PASSWORD is required when creating a new site' >&2; exit 64; }
-          bench new-site \
-            --mariadb-user-host-login-scope='%' \
-            --admin-password="$${ADMIN_PASSWORD}" \
-            --db-root-username=root \
-            --db-root-password="$${DB_ROOT_PASSWORD}" \
-            "$${SITE_NAME}"
+            bench new-site \
+              --mariadb-user-host-login-scope='%' \
+              --admin-password="$${ADMIN_PASSWORD}" \
+              --db-root-username=root \
+              --db-root-password="$${DB_ROOT_PASSWORD}" \
+              "$${SITE_NAME}"
         fi
 
   install-apps:
     <<: *job
     depends_on:
       create-site:
+        condition: service_completed_successfully
+      restore-db: 
         condition: service_completed_successfully
     environment:
       SITE_NAME: '${SITE_NAME:?SITE_NAME is required}'
@@ -206,7 +222,9 @@ services:
         export FRAPPE_SITE_NAME_HEADER="$${SITE_NAME}"
         exec nginx-entrypoint.sh
     expose:
-      - '8080'
+      - "8080"
+    # ports:
+    #   - "8080:8080"
     depends_on:
       backend:
         condition: service_healthy
@@ -259,6 +277,315 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  ensure-site-db:
+    <<: *job
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    environment:
+      DB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}'
+      DB_HOST: '${DB_HOST:-db}'
+      DB_PORT: '${DB_PORT:-3306}'
+      SITE_NAME: '${SITE_NAME:?SITE_NAME is required}'
+    command:
+      - |
+        set -Eeuo pipefail
+        wait-for-it -t 180 "$${DB_HOST}:$${DB_PORT}"
+
+        CONFIG="sites/$${SITE_NAME}/site_config.json"
+
+        if [[ ! -f "$${CONFIG}" ]]; then
+          echo "No existing site_config.json for $${SITE_NAME}; nothing to ensure yet."
+          exit 0
+        fi
+
+        DB_NAME=$(python3 -c "import json;print(json.load(open('$${CONFIG}'))['db_name'])")
+        DB_PASSWORD=$(python3 -c "import json;print(json.load(open('$${CONFIG}'))['db_password'])")
+
+        echo "Ensuring database and user exist for site $${SITE_NAME} (db: $${DB_NAME})"
+
+        mariadb -h "$${DB_HOST}" -P "$${DB_PORT}" -uroot -p"$${DB_ROOT_PASSWORD}" <<SQL
+        CREATE DATABASE IF NOT EXISTS \`$${DB_NAME}\`;
+        CREATE USER IF NOT EXISTS '$${DB_NAME}'@'%' IDENTIFIED BY '$${DB_PASSWORD}';
+        ALTER USER '$${DB_NAME}'@'%' IDENTIFIED BY '$${DB_PASSWORD}';
+        GRANT ALL PRIVILEGES ON \`$${DB_NAME}\`.* TO '$${DB_NAME}'@'%';
+        FLUSH PRIVILEGES;
+        SQL
+
+        echo "Database ensured for $${SITE_NAME}"
+    
+  verify-db-root-credentials:
+    <<: *job
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}'
+      DB_HOST: '${DB_HOST:-db}'
+      DB_PORT: '${DB_PORT:-3306}'
+    command:
+      - |
+        set -Eeuo pipefail
+        if ! mariadb -h "$${DB_HOST}" -P "$${DB_PORT}" -uroot -p"$${DB_ROOT_PASSWORD}" -e "SELECT 1;" >/dev/null 2>&1; then
+          echo "=========================================" >&2
+          echo "FATAL: DB_ROOT_PASSWORD does not match the root password" >&2
+          echo "already stored in the db-data volume ('${DB_VOLUME_NAME}')." >&2
+          echo "This happens when DB_ROOT_PASSWORD changed after the volume" >&2
+          echo "was first initialized -- MariaDB only applies the env var" >&2
+          echo "root password on FIRST init, never after." >&2
+          echo "Fix: either restore the original DB_ROOT_PASSWORD, or reset" >&2
+          echo "root's password inside the volume to match the current one." >&2
+          echo "=========================================" >&2
+          exit 1
+        fi
+        echo "DB root credentials verified OK."
+
+  backup:
+    image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
+    entrypoint: ["bash", "-c"]
+    restart: 'no'
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command:
+      - |
+        set -euo pipefail
+ 
+        ENABLE_BACKUP="$${ENABLE_BACKUP:-false}"
+ 
+        case "$${ENABLE_BACKUP}" in
+          true|1|yes|on)
+            ;;
+          *)
+            echo "========================================="
+            echo "Backup is disabled."
+            echo "Set ENABLE_BACKUP=true to enable."
+            echo "========================================="
+            exit 0
+            ;;
+        esac
+ 
+        echo "Waiting for database..."
+        wait-for-it -t 180 "$${DB_HOST:-db}:$${DB_PORT:-3306}"
+ 
+        SITE_NAME="$${SITE_NAME:?SITE_NAME is required}"
+        BACKUP_DIR="/home/frappe/frappe-bench/sites/$${SITE_NAME}/private/backups"
+        KEEP_LOCAL_DUMPS="$${KEEP_LOCAL_DUMPS:-3}"
+
+        echo "Removing stale Restic locks..."
+        restic unlock || true
+
+        echo "Running Frappe backup..."
+        bench --site "$${SITE_NAME}" backup --with-files
+
+        echo "Cleaning up old local backup dumps (keeping last $${KEEP_LOCAL_DUMPS})..."
+        ls -1t "$${BACKUP_DIR}"/*-database.sql.gz 2>/dev/null \
+          | tail -n +"$((KEEP_LOCAL_DUMPS + 1))" \
+          | sed -E 's/-database\.sql\.gz$//' \
+          | while read -r prefix; do
+              rm -fv "$${prefix}"-database.sql.gz \
+                     "$${prefix}"-files.tar \
+                     "$${prefix}"-private-files.tar \
+                     "$${prefix}"-site_config_backup.json
+            done
+
+        if ! restic snapshots >/dev/null 2>&1; then
+            echo "No Restic repository detected. Creating one..."
+            restic init
+        else
+            echo "Restic repository found."
+        fi
+
+        echo "Backing up dump files to Restic..."
+        restic backup "$${BACKUP_DIR}" --tag "site:$${SITE_NAME}"
+
+        restic forget \
+          --group-by=paths \
+          --keep-last=3 \
+          --prune
+        restic check
+        echo "Backup completed successfully"
+    environment:
+      ENABLE_BACKUP: ${ENABLE_BACKUP:-false}
+      RESTIC_REPOSITORY: ${RESTIC_REPOSITORY}
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${B2_ACCOUNT_ID}
+      AWS_SECRET_ACCESS_KEY: ${B2_ACCOUNT_KEY}
+      SITE_NAME: ${SITE_NAME}
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-3306}
+      KEEP_LOCAL_DUMPS: ${KEEP_LOCAL_DUMPS:-3}
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+  restore:
+    image: "${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}"
+    user: root
+    entrypoint: ["bash", "-c"]
+    restart: 'no'
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    command:
+      - |
+        set -Eeuo pipefail
+        ENABLE_RESTORE="$${ENABLE_RESTORE:-false}"
+        case "$${ENABLE_RESTORE}" in
+          true|1|yes|on) ;;
+          *)
+            echo "Restore is disabled. Set ENABLE_RESTORE=true to enable."
+            exit 0
+            ;;
+        esac
+        SITE_NAME="$${SITE_NAME:-frontend}"
+        SNAPSHOT="$${SNAPSHOT:-latest}"
+        RESTORE_ROOT="/restore"
+        SRC="$${RESTORE_ROOT}/home/frappe/frappe-bench/sites/$${SITE_NAME}/private/backups"
+        SITES_ROOT="/home/frappe/frappe-bench/sites"
+        DST="$${SITES_ROOT}/$${SITE_NAME}/private/backups"
+        STAGE_TMP="$${DST}.staging-tmp"
+
+        rollback() {
+          echo
+          echo "Staging failed — cleaning up partial files."
+          rm -rf "$${STAGE_TMP}" "$${RESTORE_ROOT}"
+        }
+        trap rollback ERR
+
+        echo "Checking repository..."
+        restic cat config >/dev/null
+        echo "Checking snapshot..."
+        restic snapshots --tag "site:$${SITE_NAME}" >/dev/null
+
+        rm -rf "$${RESTORE_ROOT}"
+        mkdir -p "$${RESTORE_ROOT}"
+
+        echo "Downloading snapshot..."
+        restic restore "$${SNAPSHOT}" \
+          --tag "site:$${SITE_NAME}" \
+          --target "$${RESTORE_ROOT}"
+
+        if [ ! -d "$${SRC}" ]; then
+          echo "ERROR: No backups found for site '$${SITE_NAME}' in snapshot."
+          exit 1
+        fi
+
+        # Stage into a temp dir first, then atomically move into place
+        rm -rf "$${STAGE_TMP}"
+        mkdir -p "$${STAGE_TMP}"
+        cp -a "$${SRC}"/. "$${STAGE_TMP}"/
+        chown -R frappe:frappe "$${STAGE_TMP}"
+
+        mkdir -p "$${DST}"
+        cp -a "$${STAGE_TMP}"/. "$${DST}"/
+        rm -rf "$${STAGE_TMP}" "$${RESTORE_ROOT}"
+
+        trap - ERR
+        echo "Backup files staged for $${SITE_NAME}"
+    environment:
+      ENABLE_RESTORE: ${ENABLE_RESTORE:-false}
+      RESTIC_REPOSITORY: ${RESTIC_REPOSITORY}
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${B2_ACCOUNT_ID}
+      AWS_SECRET_ACCESS_KEY: ${B2_ACCOUNT_KEY}
+      SITE_NAME: ${SITE_NAME}
+      SNAPSHOT: ${SNAPSHOT:-latest}
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+
+  restore-db:
+    image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
+    user: frappe
+    entrypoint: ["bash", "-c"]
+    restart: 'no'
+    depends_on:
+      create-site:
+        condition: service_completed_successfully
+      restore:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    environment:
+      ENABLE_RESTORE: ${ENABLE_RESTORE:-false}
+      SITE_NAME: '${SITE_NAME:?SITE_NAME is required}'
+      DB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}'
+      DB_HOST: '${DB_HOST:-db}'
+      DB_PORT: '${DB_PORT:-3306}'
+    command:
+      - |
+        set -Eeuo pipefail
+
+        ENABLE_RESTORE="$${ENABLE_RESTORE:-false}"
+        case "$${ENABLE_RESTORE}" in
+          true|1|yes|on) ;;
+          *)
+            echo "Restore is disabled. Nothing to restore into DB."
+            exit 0
+            ;;
+        esac
+
+        BACKUP_DIR="sites/$${SITE_NAME}/private/backups"
+
+        shopt -s nullglob
+        DB_FILES=("$${BACKUP_DIR}"/*-database.sql.gz)
+        PUBLIC_FILES=("$${BACKUP_DIR}"/*-files.tar)
+        PRIVATE_FILES=("$${BACKUP_DIR}"/*-private-files.tar)
+
+        if [[ $${#DB_FILES[@]} -eq 0 ]]; then
+          echo "No database backup found; skipping DB restore (fresh site)."
+          exit 0
+        fi
+
+        DB_FILE=$(printf '%s\n' "$${DB_FILES[@]}" | sort | tail -n1)
+        PUBLIC_FILE=$( [[ $${#PUBLIC_FILES[@]} -gt 0 ]] && printf '%s\n' "$${PUBLIC_FILES[@]}" | sort | tail -n1 || true )
+        PRIVATE_FILE=$( [[ $${#PRIVATE_FILES[@]} -gt 0 ]] && printf '%s\n' "$${PRIVATE_FILES[@]}" | sort | tail -n1 || true )
+
+        # --- Rollback safety net: snapshot current DB before touching it ---
+        CONFIG="sites/$${SITE_NAME}/site_config.json"
+        DB_NAME=$(python3 -c "import json;print(json.load(open('$${CONFIG}'))['db_name'])")
+        PRE_RESTORE_DUMP="sites/$${SITE_NAME}/private/backups/pre-restore-safety.sql.gz"
+
+        rollback_triggered=0
+        rollback() {
+          if [[ "$${rollback_triggered}" == 1 ]]; then
+            return
+          fi
+          rollback_triggered=1
+          echo
+          echo "bench restore failed — rolling back database to pre-restore state..."
+          if [[ -f "$${PRE_RESTORE_DUMP}" ]]; then
+            gunzip -c "$${PRE_RESTORE_DUMP}" | mariadb -h "$${DB_HOST}" -P "$${DB_PORT}" -uroot -p"$${DB_ROOT_PASSWORD}" "$${DB_NAME}"
+            echo "Rollback complete — DB restored to pre-restore state."
+          else
+            echo "WARNING: no pre-restore snapshot found; cannot auto-rollback." >&2
+          fi
+        }
+        trap rollback ERR
+
+        echo "Taking safety snapshot of current DB before restore..."
+        mariadb-dump -h "$${DB_HOST}" -P "$${DB_PORT}" -uroot -p"$${DB_ROOT_PASSWORD}" "$${DB_NAME}" \
+          | gzip > "$${PRE_RESTORE_DUMP}"
+
+        RESTORE_ARGS=("$${DB_FILE}" --db-root-username root --db-root-password "$${DB_ROOT_PASSWORD}")
+        [[ -n "$${PUBLIC_FILE}" ]] && RESTORE_ARGS+=(--with-public-files "$${PUBLIC_FILE}")
+        [[ -n "$${PRIVATE_FILE}" ]] && RESTORE_ARGS+=(--with-private-files "$${PRIVATE_FILE}")
+
+        bench --site "$${SITE_NAME}" restore "$${RESTORE_ARGS[@]}"
+        bench --site "$${SITE_NAME}" enable-scheduler
+        bench --site "$${SITE_NAME}" migrate
+        bench --site "$${SITE_NAME}" clear-cache
+        trap - ERR
+        rm -f "$${PRE_RESTORE_DUMP}"
+        echo "Database restore completed."
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
 
 volumes:
   db-data:

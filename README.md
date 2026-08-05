@@ -6,7 +6,7 @@ This repository builds and operates a combined Frappe v16 image containing ERPNe
 
 - [`build/apps.json`](build/apps.json) is the only source of ERPNext, HRMS, and Payments refs used by the image build.
 - [`.github/workflows/build-image.yml`](.github/workflows/build-image.yml) is manual-only. It pins Frappe and the official `frappe_docker` builder once, uses the upstream layered Containerfile without modification, verifies all four apps, and only publishes when `publish=true` is explicitly selected.
-- [`compose.yaml`](compose.yaml) is pull-only and designed to be pasted into a Coolify user-defined Service. Coolify is not connected to this Git repository.
+- [`compose.yaml`](compose.yaml) is pull-only and designed to be pasted into a Coolify user-defined Service. It defines the normal deployment path plus separate opt-in backup, restore, and restore-db jobs. In practice it brings up MariaDB, Redis cache and queue services, runs the one-shot configurator, creates or reuses the site, installs the apps, migrates the site, and then starts the backend, frontend, websocket, worker, and scheduler services. Coolify is not connected to this Git repository.
 
 The image workflow publishes the requested immutable release tag. Do not deploy `latest` or a mutable branch tag.
 
@@ -14,7 +14,14 @@ The image workflow publishes the requested immutable release tag. Do not deploy 
 
 Each deployment runs the official-style one-shot configurator, creates a site only when the sites volume is genuinely empty, ensures Payments, ERPNext, and HRMS are installed, and runs Frappe migration before starting the runtime services. Existing cloned and production sites skip creation automatically.
 
-The v15-to-v16 rehearsal uses a complete isolated copy of the production database and sites data. After the clone passes with the v16 application image and MariaDB 11.8, production receives the same image and Compose changes. There are no deployment modes or restore flags.
+The v15-to-v16 rehearsal uses a complete isolated copy of the production database and sites data. After the clone passes with the v16 application image and MariaDB 11.8, production receives the same image and Compose changes. There are no deployment modes; backup, restore, and restore-db are separate opt-in jobs.
+
+## Backup and restore
+
+The Compose file includes three optional maintenance jobs: `backup`, `restore`, and `restore-db`. They are disabled by default and only run when the corresponding environment flag is enabled.
+
+- `ENABLE_BACKUP=true` runs a Frappe backup and then stores the site data with Restic.
+- `ENABLE_RESTORE=true` restores a site snapshot from Restic into the sites volume.
 
 See [the Coolify migration runbook](docs/coolify-v15-to-v16.md) before changing the live Service.
 
