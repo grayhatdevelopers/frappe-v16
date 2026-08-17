@@ -534,8 +534,6 @@ services:
 
         shopt -s nullglob
         DB_FILES=("$${BACKUP_DIR}"/*-database.sql.gz)
-        PUBLIC_FILES=("$${BACKUP_DIR}"/*-files.tar)
-        PRIVATE_FILES=("$${BACKUP_DIR}"/*-private-files.tar)
 
         if [[ $${#DB_FILES[@]} -eq 0 ]]; then
           echo "No database backup found; skipping DB restore (fresh site)."
@@ -543,8 +541,18 @@ services:
         fi
 
         DB_FILE=$(printf '%s\n' "$${DB_FILES[@]}" | sort | tail -n1)
-        PUBLIC_FILE=$( [[ $${#PUBLIC_FILES[@]} -gt 0 ]] && printf '%s\n' "$${PUBLIC_FILES[@]}" | sort | tail -n1 || true )
-        PRIVATE_FILE=$( [[ $${#PRIVATE_FILES[@]} -gt 0 ]] && printf '%s\n' "$${PRIVATE_FILES[@]}" | sort | tail -n1 || true )
+
+        # Derive all sibling files from the SAME backup prefix as DB_FILE,
+        # not independent globs -- avoids mixing in an unrelated/stray archive.
+        PREFIX="$${DB_FILE%-database.sql.gz}"
+        PUBLIC_FILE="$${PREFIX}-files.tar"
+        PRIVATE_FILE="$${PREFIX}-private-files.tar"
+        SITE_CONFIG_BACKUP="$${PREFIX}-site_config_backup.json"
+
+        [[ -f "$${PUBLIC_FILE}" ]] || PUBLIC_FILE=""
+        [[ -f "$${PRIVATE_FILE}" ]] || PRIVATE_FILE=""
+
+        echo "Using backup set: $${PREFIX}"
 
         # --- Rollback safety net: snapshot current DB before touching it ---
         CONFIG="sites/$${SITE_NAME}/site_config.json"
@@ -558,10 +566,10 @@ services:
           fi
           rollback_triggered=1
           echo
-          echo "bench restore failed — rolling back database to pre-restore state..."
+          echo "restore failed -- rolling back database to pre-restore state..."
           if [[ -f "$${PRE_RESTORE_DUMP}" ]]; then
             gunzip -c "$${PRE_RESTORE_DUMP}" | mariadb -h "$${DB_HOST}" -P "$${DB_PORT}" -uroot -p"$${DB_ROOT_PASSWORD}" "$${DB_NAME}"
-            echo "Rollback complete — DB restored to pre-restore state."
+            echo "Rollback complete -- DB restored to pre-restore state."
           else
             echo "WARNING: no pre-restore snapshot found; cannot auto-rollback." >&2
           fi
@@ -577,8 +585,42 @@ services:
         [[ -n "$${PRIVATE_FILE}" ]] && RESTORE_ARGS+=(--with-private-files "$${PRIVATE_FILE}")
 
         bench --site "$${SITE_NAME}" restore "$${RESTORE_ARGS[@]}"
+
+        # --- Restore original encryption_key so encrypted fields (e.g. Social
+        # Login client secrets) can decrypt -- the backup DB was encrypted
+        # under the OLD key, not whatever key this site's fresh
+        # site_config.json currently has. Written directly to the JSON file
+        # (not via `bench set-config`) since Fernet keys can start with "-"
+        # and get mis-parsed as a CLI flag by Click.
+        if [[ -f "$${SITE_CONFIG_BACKUP}" ]]; then
+          echo "Restoring original encryption_key from backup site_config..."
+          python3 - "$${SITE_CONFIG_BACKUP}" "$${CONFIG}" <<'PYEOF'
+        import json, sys
+
+        backup_path, config_path = sys.argv[1], sys.argv[2]
+
+        with open(backup_path) as f:
+            key = json.load(f).get("encryption_key")
+
+        if not key:
+            print("WARNING: site_config_backup.json found but no encryption_key inside it.", file=sys.stderr)
+            sys.exit(0)
+
+        with open(config_path) as f:
+            config = json.load(f)
+
+        config["encryption_key"] = key
+
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=1)
+
+        print("encryption_key restored successfully.")
+        PYEOF
+        else
+          echo "WARNING: no site_config_backup.json found for $${PREFIX}; encrypted fields (e.g. social login secrets) may not decrypt." >&2
+        fi
+
         bench --site "$${SITE_NAME}" enable-scheduler
-        bench --site "$${SITE_NAME}" migrate
         bench --site "$${SITE_NAME}" clear-cache
         trap - ERR
         rm -f "$${PRE_RESTORE_DUMP}"
@@ -586,7 +628,7 @@ services:
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
-
+      
 volumes:
   db-data:
     name: '${DB_VOLUME_NAME:?DB_VOLUME_NAME is required}'
