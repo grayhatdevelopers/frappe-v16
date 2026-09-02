@@ -190,6 +190,39 @@ services:
         bench --site "$${SITE_NAME}" list-apps
         migration_succeeded=1
 
+  sync-domain:
+    <<: *job
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      SITE_NAME: '${SITE_NAME:?SITE_NAME is required}'
+      DOMAIN_NAME: '${DOMAIN_NAME:-}'
+    command:
+      - |
+        set -Eeuo pipefail
+        DOMAIN_NAME="$${DOMAIN_NAME:-}"
+
+        if [[ -z "$${DOMAIN_NAME}" ]]; then
+          echo "No DOMAIN_NAME set; skipping domain registration."
+          exit 0
+        fi
+
+        CONFIG="sites/$${SITE_NAME}/site_config.json"
+        ALREADY=$(python3 -c "
+        import json
+        cfg = json.load(open('$${CONFIG}'))
+        print('$${DOMAIN_NAME}' in cfg.get('domains', []))
+        ")
+
+        if [[ "$${ALREADY}" == "True" ]]; then
+          echo "Domain $${DOMAIN_NAME} already registered on $${SITE_NAME}; skipping."
+          exit 0
+        fi
+
+        echo "Registering domain $${DOMAIN_NAME} on site $${SITE_NAME}"
+        bench --site "$${SITE_NAME}" setup add-domain "$${DOMAIN_NAME}"
+
   backend:
     <<: *app
     depends_on:
