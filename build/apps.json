@@ -14,5 +14,9 @@
   {
     "url": "https://github.com/buildswithpaul/Frappe_Assistant_Core",
     "branch": "v2.5.0"
+  },
+  {
+    "url": "https://github.com/Saad-1719/frappe_overtime_management.git",
+    "branch": "v0.1.0"
   }
 ]

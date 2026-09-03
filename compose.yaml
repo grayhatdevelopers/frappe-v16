@@ -221,8 +221,7 @@ services:
         fi
 
         echo "Registering domain $${DOMAIN_NAME} on site $${SITE_NAME}"
-        bench --site "$${SITE_NAME}" setup add-domain "$${DOMAIN_NAME}"
-
+        bench setup add-domain --site "$${SITE_NAME}" "$${DOMAIN_NAME}"
   backend:
     <<: *app
     depends_on:
