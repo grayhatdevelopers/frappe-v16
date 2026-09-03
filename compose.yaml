@@ -142,7 +142,7 @@ services:
       - |
         set -Eeuo pipefail
         [[ -d "sites/$${SITE_NAME}" ]] || { echo "Site $${SITE_NAME} does not exist" >&2; exit 66; }
-        for app in payments erpnext hrms frappe_assistant_core; do
+        for app in payments erpnext hrms frappe_assistant_core  overtime_management; do
           if bench --site "$${SITE_NAME}" list-apps | grep -Eq "^$${app}([[:space:]]|$$)"; then
             echo "$${app} is already installed"
           else
