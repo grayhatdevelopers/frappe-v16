@@ -97,7 +97,7 @@ jobs:
           docker run --rm --entrypoint bench "${TEST_IMAGE}" version --format json | tee /tmp/bench-versions.json
           jq -e '
             (map(.app) | sort) as $apps
-            | ["erpnext", "frappe", "hrms", "payments", "frappe_assistant_core"]
+            | ["erpnext", "frappe", "hrms", "payments", "frappe_assistant_core", "overtime_management"]
               | all(. as $app | $apps | index($app))
           ' /tmp/bench-versions.json
           jq -e '
