@@ -25,6 +25,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
     env:
       BUILDER_DIR: builder
       FRAPPE_DOCKER_REF: c004361e790125ed13aaa933d11f7838711a8960
@@ -53,6 +54,49 @@ jobs:
           repository: frappe/frappe_docker
           ref: ${{ env.FRAPPE_DOCKER_REF }}
           path: ${{ env.BUILDER_DIR }}
+
+      - name: Show source revisions
+        run: |
+          set -Eeuo pipefail
+
+          echo "============================================================"
+          echo "SOURCE REVISIONS"
+          echo "============================================================"
+
+          echo
+          echo "=== Deployment repository ==="
+          echo "Repository: ${GITHUB_REPOSITORY}"
+          echo "Commit SHA: $(git rev-parse HEAD)"
+          echo "Commit:     $(git log -1 --format='%s')"
+
+          echo
+          echo "=== frappe/frappe_docker ==="
+          echo "Repository: https://github.com/frappe/frappe_docker"
+          echo "Requested:  ${FRAPPE_DOCKER_REF}"
+          echo "Checked:    $(git -C "${BUILDER_DIR}" rev-parse HEAD)"
+          echo "Commit:     $(git -C "${BUILDER_DIR}" log -1 --format='%s')"
+
+          echo
+          echo "=== frappe/frappe ==="
+          echo "Repository: https://github.com/frappe/frappe"
+          echo "Requested ref: ${FRAPPE_REF}"
+
+          echo
+          echo "=== apps.json ==="
+          if [ -f "${APPS_JSON_PATH}" ]; then
+            cat "${APPS_JSON_PATH}"
+          else
+            echo "ERROR: apps.json not found at ${APPS_JSON_PATH}"
+            exit 1
+          fi
+
+          echo
+          echo "============================================================"
+          echo "NOTE:"
+          echo "The refs above are the refs passed to the Docker build."
+          echo "The exact commit SHAs of the repositories listed in"
+          echo "apps.json are resolved inside the Docker build."
+          echo "============================================================"
 
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v4
