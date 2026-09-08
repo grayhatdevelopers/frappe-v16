@@ -264,7 +264,7 @@ jobs:
           build-args: |
             FRAPPE_PATH=https://github.com/frappe/frappe
             FRAPPE_BRANCH=${{ env.FRAPPE_REF }}
-            CACHE_BUST=${{ env.APPS_CACHE_KEY }}
+            CACHE_BUST=${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
           cache-to: type=gha,mode=max,scope=${{ env.CACHE_SCOPE }}
           load: true
@@ -309,7 +309,7 @@ jobs:
           build-args: |
             FRAPPE_PATH=https://github.com/frappe/frappe
             FRAPPE_BRANCH=${{ env.FRAPPE_REF }}
-            CACHE_BUST=${{ env.APPS_CACHE_KEY }}
+            CACHE_BUST=${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
           cache-to: type=gha,mode=max,scope=${{ env.CACHE_SCOPE }}
           platforms: linux/amd64
