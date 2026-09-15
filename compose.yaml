@@ -190,38 +190,6 @@ services:
         bench --site "$${SITE_NAME}" list-apps
         migration_succeeded=1
 
-  sync-domain:
-    <<: *job
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    environment:
-      SITE_NAME: '${SITE_NAME:?SITE_NAME is required}'
-      DOMAIN_NAME: '${DOMAIN_NAME:-}'
-    command:
-      - |
-        set -Eeuo pipefail
-        DOMAIN_NAME="$${DOMAIN_NAME:-}"
-
-        if [[ -z "$${DOMAIN_NAME}" ]]; then
-          echo "No DOMAIN_NAME set; skipping domain registration."
-          exit 0
-        fi
-
-        CONFIG="sites/$${SITE_NAME}/site_config.json"
-        ALREADY=$(python3 -c "
-        import json
-        cfg = json.load(open('$${CONFIG}'))
-        print('$${DOMAIN_NAME}' in cfg.get('domains', []))
-        ")
-
-        if [[ "$${ALREADY}" == "True" ]]; then
-          echo "Domain $${DOMAIN_NAME} already registered on $${SITE_NAME}; skipping."
-          exit 0
-        fi
-
-        echo "Registering domain $${DOMAIN_NAME} on site $${SITE_NAME}"
-        bench setup add-domain --site "$${SITE_NAME}" "$${DOMAIN_NAME}"
   backend:
     <<: *app
     depends_on:
@@ -247,12 +215,7 @@ services:
 
   frontend:
     <<: *app
-    command:
-      - bash
-      - -c
-      - |
-        export FRAPPE_SITE_NAME_HEADER="$${SITE_NAME}"
-        exec nginx-entrypoint.sh
+    command: [nginx-entrypoint.sh]
     expose:
       - "8080"
     # ports:
@@ -264,6 +227,7 @@ services:
         condition: service_healthy
     environment:
       BACKEND: backend:8000
+      FRAPPE_SITE_NAME_HEADER: '${SITE_NAME:?SITE_NAME is required}'
       SITE_NAME: '${SITE_NAME:?SITE_NAME is required}'
       SOCKETIO: websocket:9000
       UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
@@ -364,7 +328,6 @@ services:
         if ! mariadb -h "$${DB_HOST}" -P "$${DB_PORT}" -uroot -p"$${DB_ROOT_PASSWORD}" -e "SELECT 1;" >/dev/null 2>&1; then
           echo "=========================================" >&2
           echo "FATAL: DB_ROOT_PASSWORD does not match the root password" >&2
-          echo "already stored in the db-data volume ('${DB_VOLUME_NAME}')." >&2
           echo "This happens when DB_ROOT_PASSWORD changed after the volume" >&2
           echo "was first initialized -- MariaDB only applies the env var" >&2
           echo "root password on FIRST init, never after." >&2
@@ -662,13 +625,8 @@ services:
       - logs:/home/frappe/frappe-bench/logs
       
 volumes:
-  db-data:
-    name: '${DB_VOLUME_NAME:?DB_VOLUME_NAME is required}'
-  redis-cache-data:
-    name: '${REDIS_CACHE_VOLUME_NAME:?REDIS_CACHE_VOLUME_NAME is required}'
-  redis-queue-data:
-    name: '${REDIS_QUEUE_VOLUME_NAME:?REDIS_QUEUE_VOLUME_NAME is required}'
-  sites:
-    name: '${SITES_VOLUME_NAME:?SITES_VOLUME_NAME is required}'
-  logs:
-    name: '${LOGS_VOLUME_NAME:?LOGS_VOLUME_NAME is required}'
+  db-data: null
+  redis-cache-data: null
+  redis-queue-data: null
+  sites: null
+  logs: null
