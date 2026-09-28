@@ -14,8 +14,8 @@ x-app: &app
 x-job: &job
   image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
   pull_policy: missing
+  # Coolify leaves services that never restart out of the health status.
   restart: 'no'
-  exclude_from_hc: true
   entrypoint: [bash, -c]
   volumes:
     - sites:/home/frappe/frappe-bench/sites
