@@ -1,6 +1,6 @@
 x-app: &app
   image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
-  pull_policy: always
+  pull_policy: missing
   restart: unless-stopped
   # frappe_restic refuses to start runtime services during a deployment or restore.
   entrypoint:
@@ -13,7 +13,7 @@ x-app: &app
 
 x-job: &job
   image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
-  pull_policy: always
+  pull_policy: missing
   restart: 'no'
   exclude_from_hc: true
   entrypoint: [bash, -c]
@@ -32,8 +32,7 @@ x-restic: &restic
 
 services:
   db:
-    image: '${DB_IMAGE:?DB_IMAGE is required}'
-    pull_policy: always
+    image: mariadb:11.8.9
     restart: unless-stopped
     stop_grace_period: 2m
     deploy:
@@ -56,11 +55,8 @@ services:
       start_period: 30s
 
   redis-cache:
-    image: redis:6.2-alpine
-    pull_policy: always
+    image: redis:8.6.7-alpine
     restart: unless-stopped
-    volumes:
-      - redis-cache-data:/data
     healthcheck:
       test: [CMD, redis-cli, ping]
       interval: 5s
@@ -68,8 +64,7 @@ services:
       retries: 20
 
   redis-queue:
-    image: redis:6.2-alpine
-    pull_policy: always
+    image: redis:8.6.7-alpine
     restart: unless-stopped
     volumes:
       - redis-queue-data:/data
@@ -181,10 +176,13 @@ services:
         condition: service_completed_successfully
     environment: *restic
     healthcheck:
-      test: [CMD, wait-for-it, '0.0.0.0:8000']
-      interval: 5s
-      timeout: 10s
-      retries: 30
+      # Checks that the site answers, not just that the port is open.
+      test: [CMD, curl, -fsS, -o, /dev/null, -H, 'X-Frappe-Site-Name: ${SITE_NAME}', 'http://127.0.0.1:8000/api/method/ping']
+      <<: &health
+        interval: 10s
+        timeout: 5s
+        retries: 3
+        start_period: 60s
 
   websocket:
     <<: *app
@@ -193,10 +191,8 @@ services:
       install-apps:
         condition: service_completed_successfully
     healthcheck:
-      test: [CMD, wait-for-it, '0.0.0.0:9000']
-      interval: 5s
-      timeout: 10s
-      retries: 30
+      test: [CMD, curl, -fsS, -o, /dev/null, 'http://127.0.0.1:9000/socket.io/?EIO=4&transport=polling']
+      <<: *health
 
   frontend:
     <<: *app
@@ -212,21 +208,16 @@ services:
       BACKEND: backend:8000
       FRAPPE_SITE_NAME_HEADER: '${SITE_NAME:?SITE_NAME is required}'
       SOCKETIO: websocket:9000
-      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      # Trust the client IP forwarded by the proxy. Coolify's Docker networks use 10.0.0.0/8.
+      UPSTREAM_REAL_IP_ADDRESS: '${UPSTREAM_REAL_IP_ADDRESS:-10.0.0.0/8}'
       UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
       UPSTREAM_REAL_IP_RECURSIVE: 'off'
       PROXY_READ_TIMEOUT: '${PROXY_READ_TIMEOUT:-120}'
       CLIENT_MAX_BODY_SIZE: '${CLIENT_MAX_BODY_SIZE:-50m}'
-      HTTPS: '${HTTPS:-on}'
-      HTTP_X_FORWARDED_PROTO: '${HTTP_X_FORWARDED_PROTO:-https}'
-      HTTP_X_FORWARDED_SSL: '${HTTP_X_FORWARDED_SSL:-on}'
-      HTTP_X_FORWARDED_PORT: '${HTTP_X_FORWARDED_PORT:-443}'
-      FORCE_SSL: '${FORCE_SSL:-1}'
     healthcheck:
-      test: [CMD, wait-for-it, '0.0.0.0:8080']
-      interval: 5s
-      timeout: 30s
-      retries: 30
+      # Through nginx to the site.
+      test: [CMD, curl, -fsS, -o, /dev/null, 'http://127.0.0.1:8080/api/method/ping']
+      <<: *health
 
   queue-default:
     <<: *app
@@ -262,7 +253,6 @@ services:
 
 volumes:
   db-data: null
-  redis-cache-data: null
   redis-queue-data: null
   sites: null
   logs: null
