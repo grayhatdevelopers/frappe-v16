@@ -24,6 +24,18 @@ APP_IMAGE=<verified v16 image tag>
 MARIADB_AUTO_UPGRADE=1
 ```
 
+Replace the variables from the earlier Compose; it ignores them otherwise:
+
+| Earlier variable | This Compose |
+| --- | --- |
+| `B2_KEY_ID` | `AWS_ACCESS_KEY_ID` |
+| `B2_ACCOUNT_ID` (the application key) | `AWS_SECRET_ACCESS_KEY` |
+| `ENABLE_BACKUP` | `RESTIC_OFFSITE_BACKUP_ENABLED` (`1` or `0`) |
+| `ENABLE_RESTORE`, `SNAPSHOT` | `SITE_OPERATION=restore`, `RESTIC_RESTORE_SNAPSHOT` |
+| `DB_IMAGE` | Removed; the Compose pins MariaDB |
+| `KEEP_LOCAL_DUMPS` | Removed; frappe_restic manages local backups |
+| `HTTPS`, `HTTP_X_FORWARDED_*`, `FORCE_SSL` | Removed; nginx never read them and takes the scheme from Coolify's `X-Forwarded-Proto` |
+
 MariaDB upgrades the copied data volume on startup. The deployment then backs up the site,
 migrates it with the v16 code and installs any app the site lacks. If the migration fails,
 the site is returned to that backup and v16 does not start.
