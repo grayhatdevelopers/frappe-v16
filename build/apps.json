@@ -18,5 +18,9 @@
   {
     "url": "https://github.com/Saad-1719/frappe_overtime_management.git",
     "branch": "v0.2.0"
+  },
+  {
+    "url": "https://github.com/grayhatdevelopers/frappe_restic",
+    "branch": "v0.1.0"
   }
 ]

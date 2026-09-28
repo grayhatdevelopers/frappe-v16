@@ -279,7 +279,7 @@ jobs:
           docker run --rm --entrypoint bench "${TEST_IMAGE}" version --format json | tee /tmp/bench-versions.json
           jq -e '
             (map(.app) | sort) as $apps
-            | ["erpnext", "frappe", "hrms", "payments", "frappe_assistant_core", "overtime_management"]
+            | ["erpnext", "frappe", "hrms", "payments", "frappe_assistant_core", "overtime_management", "frappe_restic"]
               | all(. as $app | $apps | index($app))
           ' /tmp/bench-versions.json
           jq -e '
@@ -288,6 +288,8 @@ jobs:
                 | $v16_apps
                 | index($app.app) == null or ($app.version | startswith("16.")))
           ' /tmp/bench-versions.json
+          # frappe_restic's deploy, restore and runtime guard need these.
+          docker run --rm --entrypoint bash "${TEST_IMAGE}" -c 'restic version && flock --version && jq --version'
 
       - name: Remove smoke-test image
         run: docker image rm "${TEST_IMAGE}"
