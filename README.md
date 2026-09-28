@@ -13,7 +13,8 @@ with [frappe_docker](https://github.com/frappe/frappe_docker)'s layered Containe
 | Path | Purpose |
 | --- | --- |
 | `build/apps.json` | The apps in the image and their versions. |
-| `.github/workflows/build-image.yml` | Builds the image, checks its apps and tools, and publishes it to GHCR. |
+| `.github/workflows/build-image.yml` | Builds the image and checks its apps and tools; a release also publishes it to GHCR. |
+| `renovate.json` | Keeps Frappe, the apps, frappe_docker and the Compose images current. |
 | `compose.yaml` | The deployment. |
 | `.env.example` | Its settings. |
 
@@ -52,7 +53,13 @@ Redeploying the same snapshot does nothing. A restore works on empty volumes too
 
 ## Upgrades
 
-- **Apps:** change `build/apps.json`, build a new image and set `APP_IMAGE` to its tag.
+- **Apps:** change `build/apps.json` in a pull request; Renovate opens these for new app
+  releases. Pull requests build and check the image without publishing it.
 - **Frappe v15 to v16:** see [docs/coolify-v15-to-v16.md](docs/coolify-v15-to-v16.md).
 
-Image tags are immutable; never deploy a mutable tag.
+## Releases
+
+Pull requests go to `develop` and are squash-merged, so their titles must be
+[conventional commits](https://www.conventionalcommits.org). A bot keeps a `develop` → `main`
+pull request open; merging it releases `ghcr.io/grayhatdevelopers/frappe-v16:vX.Y.Z` and sets
+`APP_IMAGE` in `.env.example` to it. Image tags are never overwritten; deploy by version.
