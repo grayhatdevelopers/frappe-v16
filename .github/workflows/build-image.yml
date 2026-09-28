@@ -13,11 +13,6 @@ concurrency:
   group: image-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  # Renovate keeps these current (renovate.json).
-  FRAPPE_DOCKER_REF: c004361e790125ed13aaa933d11f7838711a8960
-  FRAPPE_REF: v16.27.0
-
 jobs:
   # The image is built only from build/ and this workflow; pull requests that change neither skip it.
   changes:
@@ -56,6 +51,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: Read Frappe and frappe_docker versions
+        run: grep -E '^[A-Z_]+=' build/frappe.env >> "$GITHUB_ENV"
 
       - name: Checkout frappe_docker
         uses: actions/checkout@v7

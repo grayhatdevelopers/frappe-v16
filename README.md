@@ -12,6 +12,7 @@ with [frappe_docker](https://github.com/frappe/frappe_docker)'s layered Containe
 | Path | Purpose |
 | --- | --- |
 | `build/apps.json` | The apps in the image and their versions. |
+| `build/frappe.env` | The Frappe release and frappe_docker commit the image is built from. |
 | `.github/workflows/build-image.yml` | Builds the image and checks its apps and tools when a pull request changes `build/`; a release also publishes it to GHCR. |
 | `.github/workflows/lint.yml` | Checks the workflows, scripts and Compose file. |
 | `renovate.json` | Keeps Frappe, the apps, frappe_docker and the Compose images current. |
@@ -53,8 +54,8 @@ Redeploying the same snapshot does nothing. A restore works on empty volumes too
 
 ## Upgrades
 
-- **Apps:** change `build/apps.json` in a pull request; Renovate opens these for new app
-  releases. Pull requests build and check the image without publishing it.
+- **Frappe and apps:** change `build/frappe.env` or `build/apps.json` in a pull request;
+  Renovate opens these for new releases. Pull requests build and check the image without publishing it.
 - **Frappe v15 to v16:** see [docs/coolify-v15-to-v16.md](docs/coolify-v15-to-v16.md).
 
 ## Releases

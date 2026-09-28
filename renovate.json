@@ -14,16 +14,16 @@
 		{
 			"customType": "regex",
 			"description": "Frappe release built into the image",
-			"managerFilePatterns": ["/^\\.github/workflows/build-image\\.yml$/"],
-			"matchStrings": ["FRAPPE_REF: (?<currentValue>v\\S+)"],
+			"managerFilePatterns": ["/^build/frappe\\.env$/"],
+			"matchStrings": ["FRAPPE_REF=(?<currentValue>v\\S+)"],
 			"depNameTemplate": "frappe/frappe",
 			"datasourceTemplate": "github-tags"
 		},
 		{
 			"customType": "regex",
 			"description": "frappe_docker commit whose Containerfile builds the image",
-			"managerFilePatterns": ["/^\\.github/workflows/build-image\\.yml$/"],
-			"matchStrings": ["FRAPPE_DOCKER_REF: (?<currentDigest>[0-9a-f]{40})"],
+			"managerFilePatterns": ["/^build/frappe\\.env$/"],
+			"matchStrings": ["FRAPPE_DOCKER_REF=(?<currentDigest>[0-9a-f]{40})"],
 			"depNameTemplate": "frappe_docker",
 			"packageNameTemplate": "https://github.com/frappe/frappe_docker",
 			"currentValueTemplate": "main",
