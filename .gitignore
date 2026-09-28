@@ -1,7 +1,4 @@
 .env
 .env.*
 !.env.example
-.builder/
-__pycache__/
-*.py[cod]
 *.log

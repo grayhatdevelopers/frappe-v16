@@ -3,8 +3,7 @@
 A Frappe v16 image and a Compose file to run one site with it, made for
 [Coolify](https://coolify.io) but plain Docker Compose otherwise.
 
-The image is Frappe with ERPNext, HRMS, Payments, [Frappe Assistant Core](https://github.com/buildswithpaul/Frappe_Assistant_Core),
-[Overtime Management](https://github.com/Saad-1719/frappe_overtime_management) and
+The image is Frappe with the apps in [`build/apps.json`](build/apps.json), including
 [frappe_restic](https://github.com/grayhatdevelopers/frappe_restic) for backups. It is built
 with [frappe_docker](https://github.com/frappe/frappe_docker)'s layered Containerfile, unchanged.
 

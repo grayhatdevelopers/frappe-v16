@@ -82,13 +82,9 @@ jobs:
 
       - name: Check apps and tools
         run: |
+          # Frappe and every app in apps.json load and report a version.
           docker run --rm --entrypoint bench "$IMAGE" version --format json | tee versions.json
-          jq -e '
-            map(.app) as $apps
-            | ["frappe", "erpnext", "hrms", "payments", "frappe_assistant_core", "overtime_management", "frappe_restic"]
-            | all(. as $app | $apps | index($app))
-          ' versions.json
-          jq -e 'map(select(.app == ("frappe", "erpnext", "hrms"))) | all(.version | startswith("16."))' versions.json
+          jq -e --slurpfile apps build/apps.json 'length == ($apps[0] | length) + 1 and all(.version)' versions.json
           # frappe_restic's deploy, restore and runtime guard need these.
           docker run --rm --entrypoint bash "$IMAGE" -c 'restic version && flock --version && jq --version'
 
