@@ -1,41 +1,65 @@
 # Frappe v16 deployment
 
-This repository provides a compact deployment layout and build workflow for a Frappe v16 combined image (ERPNext, HRMS, Payments). It is intentionally a small, focused deployment repository and not a full fork of `frappe_docker`.
+A Frappe v16 image and a Compose file to run one site with it, made for
+[Coolify](https://coolify.io) but plain Docker Compose otherwise.
 
-## Repository contract
+The image is Frappe with the apps in [`build/apps.json`](build/apps.json), including
+[frappe_restic](https://github.com/grayhatdevelopers/frappe_restic) for backups. It is built
+with [frappe_docker](https://github.com/frappe/frappe_docker)'s layered Containerfile, unchanged.
 
-- `build/apps.json` is the single source of app refs used by the image build.
-- `.github/workflows/build-image.yml` (if present) is intended for manual image publishing: it pins the builder, uses the upstream layered Containerfile without modification, validates apps, and publishes only when explicitly requested.
-- `compose.yaml` is a pull-only deployment manifest designed to be used with a container orchestration platform or deployment service. It defines the normal runtime services and separate opt-in maintenance jobs (backup, restore, restore-db).
+## Layout
 
-The image workflow publishes immutable release tags. Avoid deploying the `latest` or mutable branch tags in production.
+| Path | Purpose |
+| --- | --- |
+| `build/apps.json` | The apps in the image and their versions. |
+| `.github/workflows/build-image.yml` | Builds the image and checks its apps and tools when a pull request changes `build/`; a release also publishes it to GHCR. |
+| `.github/workflows/lint.yml` | Checks the workflows, scripts and Compose file. |
+| `renovate.json` | Keeps Frappe, the apps, frappe_docker and the Compose images current. |
+| `compose.yaml` | The deployment. |
+| `.env.example` | Its settings. |
 
-## Deployment sequence
+## What a deployment does
 
-Typical deploys perform these steps:
+```text
+db, redis → configurator → create-site → site-operation → install-apps → runtime services
+```
 
-- Run the one-shot configurator to prepare the environment.
-- Create a site only when the sites volume is empty; otherwise reuse existing sites.
-- Install required apps (ERPNext, HRMS, Payments as configured) and run migrations before starting runtime services.
+- **configurator** points the bench at the database and Redis.
+- **create-site** creates the site on empty volumes; otherwise it does nothing.
+- **site-operation** runs frappe_restic's deploy job: it backs up the site, migrates it and
+  records the release. If the migration fails, the site is returned to that backup and the
+  deployment stops, so the new image never starts. See
+  [frappe_restic's deployment docs](https://github.com/grayhatdevelopers/frappe_restic/blob/main/docs/deployment.md).
+- **install-apps** installs any app in the image that the site does not have yet.
+- **Runtime services** (backend, websocket, frontend, workers, scheduler) start behind
+  frappe_restic's guard, which refuses to start them during a restore.
 
-For major-version upgrades (for example v15→v16), test against an isolated copy of production data before rolling the image into a live environment.
+Stop the runtime services before each deployment; Coolify does this on every deploy.
 
-## Backup and restore
+## Backups
 
-The Compose manifest includes optional maintenance jobs: `backup`, `restore`, and `restore-db`. They are disabled by default and only run when the corresponding environment flags are enabled.
+frappe_restic runs scheduled backups and a backup before every deployment. Set
+`RESTIC_OFFSITE_BACKUP_ENABLED=1` and the repository settings in `.env.example` to upload
+them with Restic. Keep a copy of `RESTIC_PASSWORD` outside the server.
 
-- Enabling backup runs Frappe's backup command and persists site data with an external snapshot tool (for example Restic).
-- Enabling restore will restore a site snapshot into the sites volume.
+## Restore
 
-Refer to your deployment platform's runbook before changing live Services or automation.
+1. Set `SITE_OPERATION=restore` and `RESTIC_RESTORE_SNAPSHOT` to a short snapshot ID (or
+   `latest`), using the image the snapshot was taken with.
+2. Deploy. The site is restored and migrated; a failed restore returns it to where it was.
+3. Set `SITE_OPERATION=migrate` again.
 
-You can use `scripts/inspect_live_stack.sh` to inspect running containers and their metadata; adapt its usage to your environment.
+Redeploying the same snapshot does nothing. A restore works on empty volumes too.
 
-## Authoritative references
+## Upgrades
 
-- https://github.com/frappe/frappe_docker
-- https://docs.frappe.io/framework/user/en/bench/reference/backup
-- https://docs.frappe.io/framework/user/en/bench/reference/restore
-- https://github.com/frappe/frappe/wiki/Migrating-to-version-16
-- https://github.com/frappe/erpnext/wiki/Migration-Guide-To-ERPNext-Version-16
-- https://mariadb.com/docs/server/server-management/install-and-upgrade-mariadb/upgrading/platform-specific-upgrade-guides/upgrading-between-major-mariadb-versions
+- **Apps:** change `build/apps.json` in a pull request; Renovate opens these for new app
+  releases. Pull requests build and check the image without publishing it.
+- **Frappe v15 to v16:** see [docs/coolify-v15-to-v16.md](docs/coolify-v15-to-v16.md).
+
+## Releases
+
+Pull requests go to `develop` and are squash-merged, so their titles must be
+[conventional commits](https://www.conventionalcommits.org). A bot keeps a `develop` → `main`
+pull request open; merging it releases `ghcr.io/grayhatdevelopers/frappe-v16:vX.Y.Z` and sets
+`APP_IMAGE` in `.env.example` to it. Image tags are never overwritten; deploy by version.

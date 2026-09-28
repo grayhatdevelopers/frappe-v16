@@ -1,0 +1,19 @@
+{
+	"branches": ["main"],
+	"plugins": [
+		["@semantic-release/commit-analyzer", { "preset": "angular" }],
+		"@semantic-release/release-notes-generator",
+		[
+			"@semantic-release/exec", {
+				"prepareCmd": "sed -i -E 's|^APP_IMAGE=.*|APP_IMAGE=ghcr.io/grayhatdevelopers/frappe-v16:v${nextRelease.version}|' .env.example"
+			}
+		],
+		[
+			"@semantic-release/git", {
+				"assets": [".env.example"],
+				"message": "chore(release): Bumped to Version ${nextRelease.version} [skip ci]"
+			}
+		],
+		"@semantic-release/github"
+	]
+}
