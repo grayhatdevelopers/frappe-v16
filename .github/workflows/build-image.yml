@@ -1,6 +1,6 @@
 name: Image
 
-# Pull requests build and check the image; a release tag also publishes it.
+# Pull requests check the image and deploy it with Compose; a release tag also publishes it.
 on:
   pull_request:
   push:
@@ -14,36 +14,43 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # The image is built only from build/ and this workflow; pull requests that change neither skip it.
+  # The image is built only from build/ and this workflow; pull requests that change neither
+  # test the latest release instead, or build it when there is none.
   changes:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: read
     outputs:
-      image: ${{ steps.files.outputs.image }}
+      build: ${{ steps.files.outputs.build }}
+      release: ${{ steps.files.outputs.release }}
     steps:
       - id: files
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          image=true
+          build=true
           if [ -n "$PR" ]; then
               files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename')
-              grep -qE '^build/|^\.github/workflows/build-image\.yml$' <<< "$files" || image=false
+              if ! grep -qE '^build/|^\.github/workflows/build-image\.yml$' <<< "$files" &&
+                  release=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName); then
+                  build=false
+                  echo "release=$release" >> "$GITHUB_OUTPUT"
+              fi
           fi
-          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
 
   image:
     needs: changes
-    if: needs.changes.outputs.image == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
       packages: write
     env:
-      IMAGE: ghcr.io/${{ github.repository }}:${{ github.ref_type == 'tag' && github.ref_name || 'test' }}
+      IMAGE: ghcr.io/${{ github.repository }}:${{ needs.changes.outputs.release || (github.ref_type == 'tag' && github.ref_name) || 'test' }}
+      BUILD: ${{ needs.changes.outputs.build }}
     steps:
       - name: Free runner disk space
         run: sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android /usr/local/share/boost /usr/share/dotnet
@@ -53,9 +60,11 @@ jobs:
           persist-credentials: false
 
       - name: Read Frappe and frappe_docker versions
+        if: env.BUILD == 'true'
         run: grep -E '^[A-Z_]+=' build/frappe.env >> "$GITHUB_ENV"
 
       - name: Checkout frappe_docker
+        if: env.BUILD == 'true'
         uses: actions/checkout@v7
         with:
           repository: frappe/frappe_docker
@@ -65,6 +74,7 @@ jobs:
 
       # The image has no .git directories; record the commit behind each ref.
       - name: Resolve source commits
+        if: env.BUILD == 'true'
         run: |
           {
               echo '| Source | Ref | Commit |'
@@ -81,8 +91,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: docker/setup-buildx-action@v4
+        if: env.BUILD == 'true'
 
       - name: Build
+        if: env.BUILD == 'true'
         uses: docker/build-push-action@v7
         with:
           context: builder
@@ -100,7 +112,17 @@ jobs:
           load: true
           tags: ${{ env.IMAGE }}
 
+      # To pull the latest release, or to publish one.
+      - name: Log in to GHCR
+        if: github.ref_type == 'tag' || env.BUILD != 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
       - name: Check apps and tools
+        if: env.BUILD == 'true'
         run: |
           # Frappe and every app in apps.json load and report a version.
           docker run --rm --entrypoint bench "$IMAGE" version --format json | tee versions.json
@@ -108,13 +130,20 @@ jobs:
           # frappe_restic's deploy, restore and runtime guard need these.
           docker run --rm --entrypoint bash "$IMAGE" -c 'restic version && flock --version && jq --version'
 
-      - name: Log in to GHCR
-        if: github.ref_type == 'tag'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
+      # A new site, then a redeploy that backs it up and migrates it, as Coolify deploys.
+      - name: Deploy and redeploy with Compose
+        env:
+          APP_IMAGE: ${{ env.IMAGE }}
+        run: |
+          docker compose --env-file .env.example up -d --wait --wait-timeout 900
+          docker compose --env-file .env.example stop
+          docker compose --env-file .env.example up -d --wait --wait-timeout 900
+
+      - name: Compose logs
+        if: failure()
+        env:
+          APP_IMAGE: ${{ env.IMAGE }}
+        run: docker compose --env-file .env.example logs --no-color
 
       # Pushes the image that was just checked.
       - name: Publish

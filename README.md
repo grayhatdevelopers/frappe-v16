@@ -13,7 +13,7 @@ with [frappe_docker](https://github.com/frappe/frappe_docker)'s layered Containe
 | --- | --- |
 | `build/apps.json` | The apps in the image and their versions. |
 | `build/frappe.env` | The Frappe release and frappe_docker commit the image is built from. |
-| `.github/workflows/build-image.yml` | Builds the image and checks its apps and tools when a pull request changes `build/`; a release also publishes it to GHCR. |
+| `.github/workflows/build-image.yml` | Builds and checks the image when a pull request changes `build/`, otherwise uses the latest release, then deploys and redeploys it with Compose. A release also publishes the image to GHCR. |
 | `.github/workflows/lint.yml` | Checks the workflows, scripts and Compose file. |
 | `renovate.json` | Keeps Frappe, the apps, frappe_docker and the Compose images current. |
 | `compose.yaml` | The deployment. |
