@@ -19,6 +19,13 @@ with [frappe_docker](https://github.com/frappe/frappe_docker)'s layered Containe
 | `compose.yaml` | The deployment. |
 | `.env.example` | Its settings. |
 
+## Running it
+
+Copy `.env.example` to `.env`, replace the `replace-me` values and run
+`docker compose up -d`. On Coolify, create a Docker Compose resource from this repository
+and set the same variables there. Put a reverse proxy in front of the `frontend` service;
+its port is not published.
+
 ## What a deployment does
 
 ```text
@@ -64,3 +71,7 @@ Pull requests go to `develop` and are squash-merged, so their titles must be
 [conventional commits](https://www.conventionalcommits.org). A bot keeps a `develop` → `main`
 pull request open; merging it releases `ghcr.io/grayhatdevelopers/frappe-v16:vX.Y.Z` and sets
 `APP_IMAGE` in `.env.example` to it. Image tags are never overwritten; deploy by version.
+
+## License
+
+[MIT](LICENSE)
