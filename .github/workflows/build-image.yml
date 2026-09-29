@@ -1,8 +1,8 @@
 name: Image
 
-# Builds the image once per change to build/ or this workflow, then deploys it with Compose.
-# Documentation-only pull requests skip it.
-# The image is published under a tag named after those files, which develop also tags :develop
+# Builds the image once per change to build/, then deploys it with Compose.
+# Documentation-only pull requests and the develop -> main pull request skip it.
+# The image is published under a tag named after build/, which develop also tags :develop
 # and a release tags with its version (see release.yml). Pull requests from forks publish nothing.
 on:
   pull_request:
@@ -40,7 +40,10 @@ jobs:
 
   image:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # develop's own push already checked the commit the develop -> main pull request brings.
+    if: >-
+      needs.changes.outputs.code == 'true' &&
+      !(github.head_ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -63,11 +66,28 @@ jobs:
 
       # Reuses the image when these build files were already built.
       - name: Find the image
+        env:
+          PUBLISH: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           image=$(scripts/image_ref.sh)
           build=true
           docker buildx imagetools inspect "$image" > /dev/null && build=false
-          { echo "IMAGE=$image"; echo "BUILD=$build"; } >> "$GITHUB_ENV"
+          # Each app set has its own cache, so builds of different app sets stop overwriting
+          # each other's; develop's own cache fills in whatever a new app set lacks.
+          cache="ghcr.io/${GITHUB_REPOSITORY}:buildcache"
+          apps_cache="$cache-$(sha256sum build/apps.json | cut -c1-12)"
+          {
+              echo "IMAGE=$image"
+              echo "BUILD=$build"
+              echo 'CACHE_FROM<<EOF'
+              echo "type=registry,ref=$apps_cache"
+              echo "type=registry,ref=$cache"
+              echo 'EOF'
+              echo 'CACHE_TO<<EOF'
+              [ "$PUBLISH" = true ] && echo "type=registry,ref=$apps_cache,mode=max"
+              [ "$GITHUB_EVENT_NAME" = push ] && echo "type=registry,ref=$cache,mode=max"
+              echo 'EOF'
+          } >> "$GITHUB_ENV"
 
       - name: Read Frappe and frappe_docker versions
         if: env.BUILD == 'true'
@@ -116,9 +136,8 @@ jobs:
           # apps.json is a secret mount, which the layer cache ignores; CACHE_BUST rebuilds on change.
           secret-files: apps_json=build/apps.json
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          # A registry cache is shared by every branch and pull request.
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
-          cache-to: ${{ !github.event.pull_request.head.repo.fork && format('type=registry,ref=ghcr.io/{0}:buildcache,mode=max', github.repository) || '' }}
+          cache-from: ${{ env.CACHE_FROM }}
+          cache-to: ${{ env.CACHE_TO }}
           platforms: linux/amd64
           load: true
           tags: ${{ env.IMAGE }}
