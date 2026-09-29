@@ -66,11 +66,28 @@ jobs:
 
       # Reuses the image when these build files were already built.
       - name: Find the image
+        env:
+          PUBLISH: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           image=$(scripts/image_ref.sh)
           build=true
           docker buildx imagetools inspect "$image" > /dev/null && build=false
-          { echo "IMAGE=$image"; echo "BUILD=$build"; } >> "$GITHUB_ENV"
+          # Each app set has its own cache, so builds of different app sets stop overwriting
+          # each other's; develop's own cache fills in whatever a new app set lacks.
+          cache="ghcr.io/${GITHUB_REPOSITORY}:buildcache"
+          apps_cache="$cache-$(sha256sum build/apps.json | cut -c1-12)"
+          {
+              echo "IMAGE=$image"
+              echo "BUILD=$build"
+              echo 'CACHE_FROM<<EOF'
+              echo "type=registry,ref=$apps_cache"
+              echo "type=registry,ref=$cache"
+              echo 'EOF'
+              echo 'CACHE_TO<<EOF'
+              [ "$PUBLISH" = true ] && echo "type=registry,ref=$apps_cache,mode=max"
+              [ "$GITHUB_EVENT_NAME" = push ] && echo "type=registry,ref=$cache,mode=max"
+              echo 'EOF'
+          } >> "$GITHUB_ENV"
 
       - name: Read Frappe and frappe_docker versions
         if: env.BUILD == 'true'
@@ -119,10 +136,8 @@ jobs:
           # apps.json is a secret mount, which the layer cache ignores; CACHE_BUST rebuilds on change.
           secret-files: apps_json=build/apps.json
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          # GitHub's cache is kept per branch, and pull requests also read their base branch's.
-          # Unused entries expire on their own.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: ${{ env.CACHE_FROM }}
+          cache-to: ${{ env.CACHE_TO }}
           platforms: linux/amd64
           load: true
           tags: ${{ env.IMAGE }}
