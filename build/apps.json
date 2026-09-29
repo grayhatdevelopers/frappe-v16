@@ -1,11 +1,11 @@
 [
   {
     "url": "https://github.com/frappe/erpnext",
-    "branch": "v16.28.0"
+    "branch": "v16.36.1"
   },
   {
     "url": "https://github.com/frappe/hrms",
-    "branch": "v16.7.1"
+    "branch": "v16.20.0"
   },
   {
     "url": "https://github.com/frappe/payments",
@@ -16,7 +16,11 @@
     "branch": "v2.5.0"
   },
   {
-    "url": "https://github.com/Saad-1719/frappe_overtime_management.git",
-    "branch": "v0.2.0"
+    "url": "https://github.com/grayhatdevelopers/frappe_overtime_management",
+    "branch": "v0.4.0"
+  },
+  {
+    "url": "https://github.com/grayhatdevelopers/frappe_restic",
+    "branch": "v0.1.4"
   }
 ]
