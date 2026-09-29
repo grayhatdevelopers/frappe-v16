@@ -1,8 +1,8 @@
 name: Image
 
-# Builds the image once per change to build/ or this workflow, then deploys it with Compose.
-# Documentation-only pull requests skip it.
-# The image is published under a tag named after those files, which develop also tags :develop
+# Builds the image once per change to build/, then deploys it with Compose.
+# Documentation-only pull requests and the develop -> main pull request skip it.
+# The image is published under a tag named after build/, which develop also tags :develop
 # and a release tags with its version (see release.yml). Pull requests from forks publish nothing.
 on:
   pull_request:
@@ -40,7 +40,10 @@ jobs:
 
   image:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # develop's own push already checked the commit the develop -> main pull request brings.
+    if: >-
+      needs.changes.outputs.code == 'true' &&
+      !(github.head_ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -116,9 +119,10 @@ jobs:
           # apps.json is a secret mount, which the layer cache ignores; CACHE_BUST rebuilds on change.
           secret-files: apps_json=build/apps.json
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          # A registry cache is shared by every branch and pull request.
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
-          cache-to: ${{ !github.event.pull_request.head.repo.fork && format('type=registry,ref=ghcr.io/{0}:buildcache,mode=max', github.repository) || '' }}
+          # GitHub's cache is kept per branch, and pull requests also read their base branch's.
+          # Unused entries expire on their own.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           platforms: linux/amd64
           load: true
           tags: ${{ env.IMAGE }}
