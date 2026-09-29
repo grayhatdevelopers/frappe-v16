@@ -1,10 +1,12 @@
 name: Image
 
-# Pull requests check the image and deploy it with Compose; a release tag also publishes it.
+# Builds the image once per change to build/ or this workflow, then deploys it with Compose.
+# The image is published under a tag named after those files, which develop also tags :develop
+# and a release tags with its version (see release.yml). Pull requests from forks publish nothing.
 on:
   pull_request:
   push:
-    tags: ['v*']
+    branches: [develop]
   workflow_dispatch:
 
 permissions: {}
@@ -14,43 +16,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # The image is built only from build/ and this workflow; pull requests that change neither
-  # test the latest release instead, or build it when there is none.
-  changes:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      build: ${{ steps.files.outputs.build }}
-      release: ${{ steps.files.outputs.release }}
-    steps:
-      - id: files
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          build=true
-          if [ -n "$PR" ]; then
-              files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename')
-              if ! grep -qE '^build/|^\.github/workflows/build-image\.yml$' <<< "$files" &&
-                  release=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName); then
-                  build=false
-                  echo "release=$release" >> "$GITHUB_OUTPUT"
-              fi
-          fi
-          echo "build=$build" >> "$GITHUB_OUTPUT"
-
   image:
-    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
       packages: write
-    env:
-      IMAGE: ghcr.io/${{ github.repository }}:${{ needs.changes.outputs.release || (github.ref_type == 'tag' && github.ref_name) || 'test' }}
-      BUILD: ${{ needs.changes.outputs.build }}
     steps:
       - name: Free runner disk space
         run: sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android /usr/local/share/boost /usr/share/dotnet
@@ -58,6 +29,21 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # Reuses the image when these build files were already built.
+      - name: Find the image
+        run: |
+          image=$(scripts/image_ref.sh)
+          build=true
+          docker buildx imagetools inspect "$image" > /dev/null && build=false
+          { echo "IMAGE=$image"; echo "BUILD=$build"; } >> "$GITHUB_ENV"
 
       - name: Read Frappe and frappe_docker versions
         if: env.BUILD == 'true'
@@ -106,20 +92,12 @@ jobs:
           # apps.json is a secret mount, which the layer cache ignores; CACHE_BUST rebuilds on change.
           secret-files: apps_json=build/apps.json
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          cache-from: type=gha,scope=frappe-v16
-          cache-to: type=gha,mode=max,scope=frappe-v16
+          # A registry cache is shared by every branch and pull request.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
+          cache-to: ${{ !github.event.pull_request.head.repo.fork && format('type=registry,ref=ghcr.io/{0}:buildcache,mode=max', github.repository) || '' }}
           platforms: linux/amd64
           load: true
           tags: ${{ env.IMAGE }}
-
-      # To pull the latest release, or to publish one.
-      - name: Log in to GHCR
-        if: github.ref_type == 'tag' || env.BUILD != 'true'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
 
       - name: Check apps and tools
         if: env.BUILD == 'true'
@@ -145,7 +123,14 @@ jobs:
           APP_IMAGE: ${{ env.IMAGE }}
         run: docker compose --env-file .env.example logs --no-color
 
-      # Pushes the image that was just checked.
+      # Publishes the image that was just checked.
       - name: Publish
-        if: github.ref_type == 'tag'
-        run: docker push "$IMAGE"
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          # Another run may have published these build files meanwhile; keep the first image.
+          if [ "$BUILD" = true ] && ! docker buildx imagetools inspect "$IMAGE" > /dev/null 2>&1; then
+              docker push "$IMAGE"
+          fi
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+              docker buildx imagetools create --tag "ghcr.io/${GITHUB_REPOSITORY}:develop" "$IMAGE"
+          fi

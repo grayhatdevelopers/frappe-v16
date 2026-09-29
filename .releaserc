@@ -5,7 +5,9 @@
 		"@semantic-release/release-notes-generator",
 		[
 			"@semantic-release/exec", {
-				"prepareCmd": "sed -i -E 's|^APP_IMAGE=.*|APP_IMAGE=ghcr.io/grayhatdevelopers/frappe-v16:v${nextRelease.version}|' .env.example"
+				"verifyConditionsCmd": "docker buildx imagetools inspect $(scripts/image_ref.sh) > /dev/null",
+				"prepareCmd": "sed -i -E 's|^APP_IMAGE=.*|APP_IMAGE=ghcr.io/grayhatdevelopers/frappe-v16:v${nextRelease.version}|' .env.example",
+				"publishCmd": "docker buildx imagetools create --tag ghcr.io/grayhatdevelopers/frappe-v16:v${nextRelease.version} $(scripts/image_ref.sh)"
 			}
 		],
 		[
