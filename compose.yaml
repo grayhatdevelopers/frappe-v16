@@ -1,6 +1,7 @@
 x-app: &app
   image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
-  pull_policy: missing
+  # Compose pulls once per service, all at once; configurator pulls for everyone.
+  pull_policy: never
   restart: unless-stopped
   # frappe_restic refuses to start runtime services during a deployment or restore.
   entrypoint:
@@ -13,7 +14,7 @@ x-app: &app
 
 x-job: &job
   image: '${APP_IMAGE:?APP_IMAGE must be an immutable image tag or digest}'
-  pull_policy: missing
+  pull_policy: never
   # Coolify leaves services that never restart out of the health status.
   restart: 'no'
   entrypoint: [bash, -c]
@@ -78,6 +79,7 @@ services:
 
   configurator:
     <<: *job
+    pull_policy: missing
     depends_on:
       redis-cache:
         condition: service_healthy

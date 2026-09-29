@@ -113,6 +113,9 @@ jobs:
         env:
           APP_IMAGE: ${{ env.IMAGE }}
         run: |
+          # One service pulls the image; parallel pulls of it can fill the disk.
+          docker compose --env-file .env.example config --format json |
+              jq -e '[.services[] | select(.image == env.APP_IMAGE and .pull_policy != "never")] | length == 1'
           docker compose --env-file .env.example up -d --wait --wait-timeout 900
           docker compose --env-file .env.example stop
           docker compose --env-file .env.example up -d --wait --wait-timeout 900
