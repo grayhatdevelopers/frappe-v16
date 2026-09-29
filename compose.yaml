@@ -44,7 +44,9 @@ services:
       - --skip-character-set-client-handshake
     environment:
       MARIADB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}'
-      MARIADB_AUTO_UPGRADE: '${MARIADB_AUTO_UPGRADE:-}'
+      # Upgrades the system tables only when the data volume is from an older MariaDB,
+      # after backing them up; also creates the users the healthcheck needs.
+      MARIADB_AUTO_UPGRADE: '1'
     volumes:
       - db-data:/var/lib/mysql
     healthcheck:
@@ -208,12 +210,9 @@ services:
       BACKEND: backend:8000
       FRAPPE_SITE_NAME_HEADER: '${SITE_NAME:?SITE_NAME is required}'
       SOCKETIO: websocket:9000
-      # Trust the client IP forwarded by the proxy. Coolify's Docker networks use 10.0.0.0/8.
-      UPSTREAM_REAL_IP_ADDRESS: '${UPSTREAM_REAL_IP_ADDRESS:-10.0.0.0/8}'
-      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
-      UPSTREAM_REAL_IP_RECURSIVE: 'off'
-      PROXY_READ_TIMEOUT: '${PROXY_READ_TIMEOUT:-120}'
-      CLIENT_MAX_BODY_SIZE: '${CLIENT_MAX_BODY_SIZE:-50m}'
+      # Only the proxy reaches this unpublished port, so trust the client IP it appends to
+      # X-Forwarded-For. Publishing the port would let clients choose their own IP.
+      UPSTREAM_REAL_IP_ADDRESS: 0.0.0.0/0
     healthcheck:
       # Through nginx to the site.
       test: [CMD, curl, -fsS, -o, /dev/null, 'http://127.0.0.1:8080/api/method/ping']

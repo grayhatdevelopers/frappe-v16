@@ -21,12 +21,12 @@ Keep the clone's volumes and deploy this Compose with the v16 image:
 
 ```dotenv
 APP_IMAGE=<verified v16 image tag>
-MARIADB_AUTO_UPGRADE=1
 ```
 
-MariaDB upgrades the copied data volume on startup. The deployment then backs up the site,
-migrates it with the v16 code and installs any app the site lacks. If the migration fails,
-the site is returned to that backup and v16 does not start.
+MariaDB upgrades the copied data volume on startup, after backing up its system tables. The
+deployment then backs up the site, migrates it with the v16 code and installs any app the
+site lacks. If the migration fails, the site is returned to that backup and v16 does not
+start.
 
 Validate login, encrypted credentials and integrations, ERPNext transactions, HRMS,
 Payments, files, websocket events, the scheduler, background jobs and logs.
@@ -36,8 +36,7 @@ Payments, files, websocket events, the scheduler, background jobs and logs.
 Use the exact Compose, image and settings that passed on the clone, and keep the production
 database, sites and logs volumes. Deploy once.
 
-For an external database (`ENABLE_DB=0`), upgrade and validate it separately and leave
-`MARIADB_AUTO_UPGRADE` empty.
+For an external database (`ENABLE_DB=0`), upgrade and validate it separately.
 
 The v15 deployment mounted a separate assets volume. The v16 image links its built assets
 into the sites volume instead, so this Compose does not mount it. Keep the old volume until
