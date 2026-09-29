@@ -17,10 +17,10 @@
   },
   {
     "url": "https://github.com/grayhatdevelopers/frappe_overtime_management",
-    "branch": "v0.3.0"
+    "branch": "v0.4.0"
   },
   {
     "url": "https://github.com/grayhatdevelopers/frappe_restic",
-    "branch": "v0.1.2"
+    "branch": "v0.1.4"
   }
 ]
