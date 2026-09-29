@@ -1,79 +1,84 @@
 # Frappe v16 deployment
 
-A Frappe v16 image and a Compose file to run one site with it, made for
-[Coolify](https://coolify.io) but plain Docker Compose otherwise.
+ERPNext and Frappe HR in one image, with a Compose file that deploys a site safely: every
+deploy is backed up first and rolled back if the migration fails, and backups go offsite with
+[Restic](https://restic.net). Made for [Coolify](https://coolify.io); plain Docker Compose works
+too.
 
-The image is Frappe with the apps in [`build/apps.json`](build/apps.json), including
-[frappe_restic](https://github.com/grayhatdevelopers/frappe_restic) for backups. It is built
-with [frappe_docker](https://github.com/frappe/frappe_docker)'s layered Containerfile, unchanged.
+## What's included
 
-## Layout
-
-| Path | Purpose |
+| App | What it does |
 | --- | --- |
-| `build/apps.json` | The apps in the image and their versions. |
-| `build/frappe.env` | The Frappe release and frappe_docker commit the image is built from. |
-| `.github/workflows/build-image.yml` | Builds and checks the image once per change to `build/`, then deploys and redeploys it with Compose. |
-| `scripts/image_ref.sh` | Names the image after the files it is built from. |
-| `.github/workflows/lint.yml` | Checks the workflows, scripts and Compose file. |
-| `renovate.json` | Keeps Frappe, the apps, frappe_docker and the Compose images current. |
-| `compose.yaml` | The deployment. |
-| `.env.example` | Its settings. |
+| [ERPNext](https://github.com/frappe/erpnext) | Accounting, buying, selling, stock and projects. |
+| [Frappe HR](https://github.com/frappe/hrms) | HR and payroll. |
+| [Payments](https://github.com/frappe/payments) | Payment gateway integrations. |
+| [Frappe Assistant Core](https://github.com/buildswithpaul/Frappe_Assistant_Core) | MCP server that lets AI assistants work with Frappe data. |
+| [Overtime Management](https://github.com/grayhatdevelopers/frappe_overtime_management) | Ours: overtime on top of Frappe HR. |
+| [Restic Backups](https://github.com/grayhatdevelopers/frappe_restic) | Ours: backups, safe deploys and restores. |
 
-## Running it
+Versions are pinned in [`build/apps.json`](build/apps.json) and
+[`build/frappe.env`](build/frappe.env). Images are published as
+`ghcr.io/grayhatdevelopers/frappe-v16:vX.Y.Z`.
 
-Copy `.env.example` to `.env`, replace the `replace-me` values and run
-`docker compose up -d`. On Coolify, create a Docker Compose resource from this repository
-and set the same variables there. Put a reverse proxy in front of the `frontend` service;
-its port is not published.
+## Quick start
 
-## What a deployment does
+1. Copy [`.env.example`](.env.example) to `.env` and replace the `replace-me` values.
+2. Run `docker compose up -d`.
+3. Put a reverse proxy in front of the `frontend` service; its port is not published.
+
+On Coolify, create a Docker Compose resource from this repository and set the same variables
+there.
+
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `APP_IMAGE` | The image to run: a release of this repository. |
+| `SITE_NAME` | The site's name. |
+| `ADMIN_PASSWORD` | Administrator password, used only when creating a new site. |
+| `ENABLE_DB`, `DB_HOST`, `DB_PORT`, `DB_ROOT_PASSWORD` | The bundled MariaDB, or an external one with `ENABLE_DB=0`. |
+| `RESTIC_OFFSITE_BACKUP_ENABLED` | `1` uploads backups; `0` keeps them on the server. |
+| `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Where backups go. Keep a copy of `RESTIC_PASSWORD` outside the server. |
+| `RESTIC_BACKUP_UPTIME_KUMA_URL`, `RESTIC_DEPLOYMENT_BACKUP_UPTIME_KUMA_URL` | Optional Uptime Kuma push monitors. |
+| `SITE_OPERATION`, `RESTIC_RESTORE_SNAPSHOT` | Deploy normally, or restore a snapshot. |
+
+## Deploying
 
 ```text
 db, redis → configurator → create-site → site-operation → install-apps → runtime services
 ```
 
-- **configurator** points the bench at the database and Redis.
 - **create-site** creates the site on empty volumes; otherwise it does nothing.
-- **site-operation** runs frappe_restic's deploy job: it backs up the site, migrates it and
-  records the release. If the migration fails, the site is returned to that backup and the
-  deployment stops, so the new image never starts. See
-  [frappe_restic's deployment docs](https://github.com/grayhatdevelopers/frappe_restic/blob/main/docs/deployment.md).
+- **site-operation** backs up the site, migrates it and records the release. If the migration
+  fails, the site is returned to that backup and the new image never starts.
 - **install-apps** installs any app in the image that the site does not have yet.
-- **Runtime services** (backend, websocket, frontend, workers, scheduler) start behind
-  frappe_restic's guard, which refuses to start them during a restore.
+- **Runtime services** (backend, websocket, frontend, workers, scheduler) refuse to start
+  during a restore.
 
-Stop the runtime services before each deployment; Coolify does this on every deploy.
+Stop the runtime services before each deployment; Coolify does this on every deploy. See
+[Restic Backups' deployment docs](https://github.com/grayhatdevelopers/frappe_restic/blob/main/docs/deployment.md)
+for details.
 
-## Backups
-
-frappe_restic runs scheduled backups and a backup before every deployment. Set
-`RESTIC_OFFSITE_BACKUP_ENABLED=1` and the repository settings in `.env.example` to upload
-them with Restic. Keep a copy of `RESTIC_PASSWORD` outside the server.
-
-## Restore
+## Restoring
 
 1. Set `SITE_OPERATION=restore` and `RESTIC_RESTORE_SNAPSHOT` to a short snapshot ID (or
-   `latest`), using the image the snapshot was taken with.
-2. Deploy. The site is restored and migrated; a failed restore returns it to where it was.
+   `latest`).
+2. Deploy. The site is restored and migrated to this image; a failed restore returns it to
+   where it was.
 3. Set `SITE_OPERATION=migrate` again.
 
 Redeploying the same snapshot does nothing. A restore works on empty volumes too.
 
-## Upgrades
+## Upgrading
 
-- **Frappe and apps:** change `build/frappe.env` or `build/apps.json` in a pull request;
-  Renovate opens these for new releases. The pull request builds and tests the image.
+- **Frappe and apps:** Renovate opens pull requests for new releases; each one builds and
+  tests the image.
 - **Frappe v15 to v16:** see [docs/coolify-v15-to-v16.md](docs/coolify-v15-to-v16.md).
 
-## Releases
+## Development
 
-Pull requests go to `develop` and are squash-merged, so their titles must be
-[conventional commits](https://www.conventionalcommits.org). A bot keeps a `develop` → `main`
-pull request open; merging it tags the image `develop` built and tested as
-`ghcr.io/grayhatdevelopers/frappe-v16:vX.Y.Z` and sets `APP_IMAGE` in `.env.example` to it.
-`:develop` follows `develop` for testing. Version tags are never overwritten; deploy by version.
+How the image is built, tested and released: [docs/development.md](docs/development.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE), by [Grayhat](https://github.com/grayhatdevelopers).
