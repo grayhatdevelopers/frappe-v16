@@ -3,7 +3,8 @@ name: Image
 # Builds the image once per change to build/, then deploys it with Compose.
 # Documentation-only pull requests and the develop -> main pull request skip it.
 # The image is published under a tag named after build/, which develop also tags :develop
-# and a release tags with its version (see release.yml). Pull requests from forks publish nothing.
+# and a release tags with its version and :latest (see release.yml).
+# Pull requests from forks publish nothing.
 on:
   pull_request:
   push:
