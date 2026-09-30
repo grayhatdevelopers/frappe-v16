@@ -27,4 +27,5 @@ Pull requests go to `develop` and are squash-merged, so their titles must be
 [conventional commits](https://www.conventionalcommits.org). A bot keeps a `develop` → `main`
 pull request open; merging it tags the image `develop` built and tested as
 `ghcr.io/grayhatdevelopers/frappe-v16:vX.Y.Z` and sets `APP_IMAGE` in `.env.example` to it.
-`:develop` follows `develop` for testing. Version tags are never overwritten; deploy by version.
+`:latest` follows the newest release and `:develop` follows `develop` for testing. Version tags
+are never overwritten; deploy by version.
