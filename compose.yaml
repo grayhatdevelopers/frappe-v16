@@ -102,7 +102,8 @@ services:
         bench set-config -g redis_queue redis://redis-queue:6379
         bench set-config -g redis_socketio redis://redis-queue:6379
         bench set-config -gp socketio_port 9000
-        bench set-config -g chromium_path /usr/bin/chromium-headless-shell
+        # /usr/bin/chromium-headless-shell is a wrapper script; stopping it leaves the browser running.
+        bench set-config -g chromium_path /usr/lib/chromium/chromium-headless-shell
 
   # Creates the site on empty volumes. A restore creates it from the snapshot instead.
   create-site:
