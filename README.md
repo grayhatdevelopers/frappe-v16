@@ -13,6 +13,7 @@ too.
 | [Frappe HR](https://github.com/frappe/hrms) | HR and payroll. |
 | [Payments](https://github.com/frappe/payments) | Payment gateway integrations. |
 | [Frappe Assistant Core](https://github.com/buildswithpaul/Frappe_Assistant_Core) | MCP server that lets AI assistants work with Frappe data. |
+| [Access Grants](https://github.com/grayhatdevelopers/frappe_access_grants) | Ours: lets chosen roles see past a user permission, such as managers and Timesheets. |
 | [Overtime Management](https://github.com/grayhatdevelopers/frappe_overtime_management) | Ours: overtime on top of Frappe HR. |
 | [Restic Backups](https://github.com/grayhatdevelopers/frappe_restic) | Ours: backups, safe deploys and restores. |
 
