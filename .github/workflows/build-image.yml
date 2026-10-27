@@ -92,7 +92,11 @@ jobs:
 
       - name: Read Frappe and frappe_docker versions
         if: env.BUILD == 'true'
-        run: grep -E '^[A-Z_]+=' build/frappe.env >> "$GITHUB_ENV"
+        run: |
+          grep -E '^[A-Z_]+=' build/frappe.env >> "$GITHUB_ENV"
+          # frappe_docker tags frappe/build with ERPNext's version and frappe/base with Frappe's,
+          # while the Containerfile looks up both by Frappe's; their versions differ.
+          echo "ERPNEXT_REF=$(jq -r '.[] | select(.url == "https://github.com/frappe/erpnext") | .branch' build/apps.json)" >> "$GITHUB_ENV"
 
       - name: Checkout frappe_docker
         if: env.BUILD == 'true'
@@ -136,6 +140,7 @@ jobs:
             CACHE_BUST=${{ hashFiles('build/apps.json') }}
           # apps.json is a secret mount, which the layer cache ignores; CACHE_BUST rebuilds on change.
           secret-files: apps_json=build/apps.json
+          build-contexts: frappe/build:${{ env.FRAPPE_REF }}=docker-image://frappe/build:${{ env.ERPNEXT_REF }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: ${{ env.CACHE_FROM }}
           cache-to: ${{ env.CACHE_TO }}
