@@ -1,0 +1,7 @@
+# Adds the revision frappe_restic tags backups and restores with. The revision is build/'s Git
+# tree, which also names the image, so it is known before a release and stays the same when a
+# release re-tags the image.
+# frappe-v16-layered: what build-image.yml built with frappe_docker's layered Containerfile.
+FROM frappe-v16-layered
+ARG SOURCE_COMMIT
+RUN printf '%s\n' "${SOURCE_COMMIT:?}" > /home/frappe/source-commit

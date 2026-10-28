@@ -146,7 +146,15 @@ jobs:
           cache-to: ${{ env.CACHE_TO }}
           platforms: linux/amd64
           load: true
-          tags: ${{ env.IMAGE }}
+          tags: frappe-v16-layered
+
+      # The local image daemon's builder, since the layered image above was only loaded there.
+      - name: Record the revision
+        if: env.BUILD == 'true'
+        run: >-
+          docker buildx build --builder default --load
+          --build-arg SOURCE_COMMIT="$(git rev-parse HEAD:build)"
+          --file build/Containerfile --tag "$IMAGE" build
 
       - name: Check apps and tools
         if: env.BUILD == 'true'
@@ -156,6 +164,11 @@ jobs:
           jq -e --slurpfile apps build/apps.json 'length == ($apps[0] | length) + 1 and all(.version)' versions.json
           # frappe_restic's deploy, restore and runtime guard need these.
           docker run --rm --entrypoint bash "$IMAGE" -c 'restic version && flock --version && jq --version'
+          # frappe_restic tags backups with the revision the image carries.
+          docker run --rm --entrypoint env/bin/python "$IMAGE" -c \
+              'from frappe_restic.restic_backup.restic_transport import release_identity; print(release_identity())' |
+              tee revision
+          [ "$(cat revision)" = "$(git rev-parse HEAD:build)" ]
 
       # A new site, then a redeploy that backs it up and migrates it, as Coolify deploys.
       - name: Deploy and redeploy with Compose
@@ -168,6 +181,11 @@ jobs:
           docker compose --env-file .env.example up -d --wait --wait-timeout 900
           docker compose --env-file .env.example stop
           docker compose --env-file .env.example up -d --wait --wait-timeout 900
+          # The redeploy's backup records the release the site ran and the one replacing it.
+          docker compose --env-file .env.example exec -T backend bash -c \
+              'jq -c "{release_identity, incoming_release}" "$(ls -t sites/*/private/deployment-backups/*/backup-control.json | head -1)"' |
+              tee releases.json
+          jq -e --arg revision "$(git rev-parse HEAD:build)" 'all(.[]; . == $revision)' releases.json
 
       - name: Compose logs
         if: failure()
