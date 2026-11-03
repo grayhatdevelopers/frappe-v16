@@ -42,6 +42,7 @@ there.
 | `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Where backups go. Keep a copy of `RESTIC_PASSWORD` outside the server. |
 | `RESTIC_BACKUP_UPTIME_KUMA_URL`, `RESTIC_DEPLOYMENT_BACKUP_UPTIME_KUMA_URL` | Optional Uptime Kuma push monitors. |
 | `SITE_OPERATION`, `RESTIC_RESTORE_SNAPSHOT` | Deploy normally, or restore a snapshot. |
+| `SITE_IS_COPY` | `1` for a test copy of a live site: emails stay queued, the scheduler stays paused and webhooks are off. |
 
 ## Deploying
 
@@ -69,6 +70,20 @@ for details.
 3. Set `SITE_OPERATION=migrate` again.
 
 Redeploying the same snapshot does nothing. A restore works on empty volumes too.
+
+### A test copy of a live site
+
+1. Make a read-only storage key for the live site's repository (in Backblaze, an application
+   key for the bucket with Read Only access and the repository's path as its file name
+   prefix).
+2. Deploy on another server with the live site's `SITE_NAME`, `RESTIC_REPOSITORY` and
+   `RESTIC_PASSWORD`, the read-only key, `RESTIC_OFFSITE_BACKUP_ENABLED=0`, `SITE_IS_COPY=1`,
+   `SITE_OPERATION=restore` and `RESTIC_RESTORE_SNAPSHOT=latest`. Any domain reaches it.
+3. To refresh it, set `RESTIC_RESTORE_SNAPSHOT` to the newest snapshot's ID (the live site's
+   Backup Control page shows it) and redeploy; `latest` restores only once per stack.
+
+The copy holds all of the live site's data and its backup password; protect it like the live
+site.
 
 ## Upgrading
 
