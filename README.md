@@ -78,9 +78,11 @@ Redeploying the same snapshot does nothing. A restore works on empty volumes too
    prefix).
 2. Deploy on another server with the live site's `SITE_NAME`, `RESTIC_REPOSITORY` and
    `RESTIC_PASSWORD`, the read-only key, `RESTIC_OFFSITE_BACKUP_ENABLED=0`, `SITE_IS_COPY=1`,
-   `SITE_OPERATION=restore` and `RESTIC_RESTORE_SNAPSHOT=latest`. Any domain reaches it.
-3. To refresh it, set `RESTIC_RESTORE_SNAPSHOT` to the newest snapshot's ID (the live site's
-   Backup Control page shows it) and redeploy; `latest` restores only once per stack.
+   `SITE_OPERATION=restore` and `RESTIC_RESTORE_SNAPSHOT=latest`, and no Uptime Kuma URLs.
+   Any domain reaches it. Then set `SITE_OPERATION=migrate`, as after any restore.
+3. To refresh it, set `SITE_OPERATION=restore` and `RESTIC_RESTORE_SNAPSHOT` to the newest
+   snapshot's ID (the live site's Backup Control page shows it), deploy, then set
+   `SITE_OPERATION=migrate` again; `latest` restores only once per stack.
 
 The copy holds all of the live site's data and its backup password; protect it like the live
 site.
