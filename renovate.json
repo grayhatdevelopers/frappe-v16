@@ -29,6 +29,14 @@
 			"packageNameTemplate": "https://github.com/frappe/frappe_docker",
 			"currentValueTemplate": "main",
 			"datasourceTemplate": "git-refs"
+		},
+		{
+			"customType": "regex",
+			"description": "frappe_docker images the image is built in and runs on",
+			"managerFilePatterns": ["/^build/frappe\\.env$/"],
+			"matchStrings": ["FRAPPE_(?:BUILD|BASE)_IMAGE=(?<depName>frappe/[a-z]+):(?<currentValue>v\\S+)"],
+			"datasourceTemplate": "docker",
+			"versioningTemplate": "semver"
 		}
 	],
 	"packageRules": [
@@ -39,8 +47,10 @@
 			"enabled": false
 		},
 		{
-			"matchPackageNames": ["frappe/frappe", "frappe/erpnext", "frappe/hrms", "frappe_docker"],
-			"groupName": "Frappe"
+			"description": "Frappe security fixes ship in patch releases, so merging the group releases the image",
+			"matchPackageNames": ["frappe/frappe", "frappe/erpnext", "frappe/hrms", "frappe_docker", "frappe/build", "frappe/base"],
+			"groupName": "Frappe",
+			"semanticCommitType": "fix"
 		},
 		{
 			"matchManagers": ["github-actions"],
