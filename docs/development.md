@@ -13,7 +13,7 @@ introduced it.
 | Path | Purpose |
 | --- | --- |
 | `build/apps.json` | The apps in the image and their versions. |
-| `build/frappe.env` | The Frappe release and frappe_docker commit the image is built from. |
+| `build/frappe.env` | The Frappe release, and the frappe_docker commit and images the image is built with. |
 | `build/Containerfile` | Records the image's revision for frappe_restic. |
 | `.github/workflows/build-image.yml` | Builds and checks the image once per change to `build/`, then deploys and redeploys it with Compose. |
 | `scripts/image_ref.sh` | Names the image after the files it is built from. |
