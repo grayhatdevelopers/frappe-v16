@@ -1,11 +1,11 @@
 [
   {
     "url": "https://github.com/frappe/erpnext",
-    "branch": "v16.54.0"
+    "branch": "v16.60.0"
   },
   {
     "url": "https://github.com/frappe/hrms",
-    "branch": "v16.53.2"
+    "branch": "v16.60.0"
   },
   {
     "url": "https://github.com/frappe/payments",
@@ -13,7 +13,7 @@
   },
   {
     "url": "https://github.com/buildswithpaul/Frappe_Assistant_Core",
-    "branch": "v2.5.0"
+    "branch": "v2.5.1"
   },
   {
     "url": "https://github.com/grayhatdevelopers/frappe_access_grants",
